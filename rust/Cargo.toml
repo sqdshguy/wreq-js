@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # HTTP client with browser impersonation
-wreq = { version = "6.0.0-rc.20", default-features = false, features = ["cookies", "json"] }
+wreq = { version = "6.0.0-rc.20", default-features = false, features = ["gzip", "deflate", "socks", "cookies", "json", "webpki-roots"] }
 wreq-util = "3.0.0-rc.1"
 
 # Neon for Node.js bindings

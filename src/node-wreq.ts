@@ -97,7 +97,7 @@ export async function request(options: RequestOptions): Promise<Response> {
   try {
     return await nativeBinding.request(options);
   } catch (error) {
-    throw new RequestError(`Request failed: ${error}`);
+    throw new RequestError(String(error));
   }
 }
 

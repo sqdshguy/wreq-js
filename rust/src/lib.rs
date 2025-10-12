@@ -220,7 +220,11 @@ fn request(mut cx: FunctionContext) -> JsResult<JsPromise> {
         deferred.settle_with(&channel, move |mut cx| {
             match result {
                 Ok(response) => response_to_js_object(&mut cx, response),
-                Err(e) => cx.throw_error(format!("Request failed: {}", e)),
+                Err(e) => {
+                    // Format error with full chain for better debugging
+                    let error_msg = format!("{:#}", e);
+                    cx.throw_error(error_msg)
+                }
             }
         });
     });

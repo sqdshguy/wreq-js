@@ -75,7 +75,7 @@ pub async fn make_request(options: RequestOptions) -> Result<Response> {
     let response = request
         .send()
         .await
-        .context("Failed to send request")?;
+        .with_context(|| format!("{} {}", method, options.url))?;
 
     // Extract response data
     let status = response.status().as_u16();
