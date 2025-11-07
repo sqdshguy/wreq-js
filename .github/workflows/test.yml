@@ -9,10 +9,44 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        node-version: [22]
+        include:
+          # x64 tests on all platforms
+          - os: ubuntu-latest
+            node-version: 20
+            arch: x64
+          - os: ubuntu-latest
+            node-version: 21
+            arch: x64
+          - os: ubuntu-latest
+            node-version: 22
+            arch: x64
+          - os: macos-latest
+            node-version: 20
+            arch: x64
+          - os: macos-latest
+            node-version: 21
+            arch: x64
+          - os: macos-latest
+            node-version: 22
+            arch: x64
+          - os: windows-latest
+            node-version: 20
+            arch: x64
+          - os: windows-latest
+            node-version: 21
+            arch: x64
+          - os: windows-latest
+            node-version: 22
+            arch: x64
+          # ARM64 tests on supported platforms
+          - os: macos-14
+            node-version: 22
+            arch: arm64
+          - os: ubuntu-24.04-arm
+            node-version: 22
+            arch: arm64
 
-    name: Test on Node ${{ matrix.node-version }} - ${{ matrix.os }}
+    name: Test on Node ${{ matrix.node-version }} (${{ matrix.arch }}) - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
 
     steps:
