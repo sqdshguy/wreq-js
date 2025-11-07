@@ -1,7 +1,7 @@
 import { test, describe, before } from 'node:test';
 import assert from 'node:assert';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { websocket } from '../node-wreq';
+import { websocket } from '../wreq-js';
 
 describe('WebSocket', () => {
   before(() => {
