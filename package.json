@@ -18,7 +18,7 @@
     "clean:dist": "rimraf dist",
     "artifacts": "napi artifacts",
     "clean": "rimraf dist rust/target rust/*.node",
-    "test": "npm run build && node --test dist/test/*.spec.js",
+    "test": "npm run build && node --test dist/test/http.spec.js dist/test/websocket.spec.js",
     "format": "prettier --write \"src/**/*.{ts,js,json,md}\"",
     "format:check": "prettier --check \"src/**/*.{ts,js,json,md}\""
   },
