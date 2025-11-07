@@ -1,6 +1,6 @@
 # Publishing Guide
 
-## How to Publish node-wreq
+## How to Publish wreq-js
 
 This package uses a **single npm package** that includes pre-built native binaries for all supported platforms.
 
@@ -67,11 +67,11 @@ npm test
 npm pack
 
 # Extract and inspect
-tar -tzf node-wreq-*.tgz
+tar -tzf wreq-js-*.tgz
 
 # Test in another project
 cd /path/to/test-project
-npm install /path/to/node-wreq/node-wreq-*.tgz
+npm install /path/to/wreq-js/wreq-js-*.tgz
 ```
 
 ### Manual Publishing (Not Recommended)

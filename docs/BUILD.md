@@ -1,6 +1,6 @@
 # Build Instructions
 
-This guide is for developers who want to build `node-wreq` from source. If you just want to use the library, see the main [README.md](../README.md) — pre-built binaries are included with the npm package.
+This guide is for developers who want to build `wreq-js` from source. If you just want to use the library, see the main [README.md](../README.md) — pre-built binaries are included with the npm package.
 
 ## Prerequisites
 

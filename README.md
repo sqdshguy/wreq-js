@@ -1,8 +1,8 @@
-# node-wreq
+# wreq-js
 
 High-performance Node.js bindings for the Rust-based wreq HTTP client with native TLS and HTTP/2 browser impersonation.
 
-Note: This is a personal fork of [will-work-for-meal/node-wreq](https://github.com/will-work-for-meal/node-wreq) with ongoing maintenance and faster dependency updates.
+Note: This is a personal fork of [will-work-for-meal/node-wreq](https://github.com/will-work-for-meal/node-wreq) (originally named node-wreq) with ongoing maintenance and faster dependency updates.
 
 ## Features
 
@@ -37,12 +37,12 @@ This library reproduces browser network behavior with high fidelity.
 ```bash
 # From GitHub (this fork)
 # Latest master branch
-npm install github:sqdshguy/node-wreq#master
-yarn add github:sqdshguy/node-wreq#master
-pnpm add github:sqdshguy/node-wreq#master
-bun add github:sqdshguy/node-wreq#master
+npm install wreq-js
+yarn add wreq-js
+pnpm add wreq-js
+bun add wreq-js
 
-# From npm registry (original repo)
+# From npm registry (original repo as node-wreq)
 npm install node-wreq
 yarn add node-wreq
 pnpm add node-wreq
@@ -61,7 +61,7 @@ Note on GitHub installs: if a matching prebuilt binary is not available for the 
 ### Basic Request
 
 ```typescript
-import { request } from 'node-wreq';
+import { request } from 'wreq-js';
 
 const response = await request({
   url: 'https://example.com/api',
@@ -77,7 +77,7 @@ console.log(response.cookies); // Cookies
 ### With Custom Headers
 
 ```typescript
-import { request } from 'node-wreq';
+import { request } from 'wreq-js';
 
 const response = await request({
   url: 'https://api.example.com/data',
@@ -92,7 +92,7 @@ const response = await request({
 ### POST Request
 
 ```typescript
-import { post } from 'node-wreq';
+import { post } from 'wreq-js';
 
 const response = await post(
   'https://api.example.com/submit',
@@ -109,7 +109,7 @@ const response = await post(
 ### Convenience Methods
 
 ```typescript
-import { get, post } from 'node-wreq';
+import { get, post } from 'wreq-js';
 
 // GET request
 const data = await get('https://api.example.com/users');
@@ -124,7 +124,7 @@ const result = await post(
 ### With Proxy
 
 ```typescript
-import { request } from 'node-wreq';
+import { request } from 'wreq-js';
 
 const response = await request({
   url: 'https://example.com',
@@ -138,7 +138,7 @@ const response = await request({
 ### WebSocket Connection
 
 ```typescript
-import { websocket } from 'node-wreq';
+import { websocket } from 'wreq-js';
 
 const ws = await websocket({
   url: 'wss://echo.websocket.org',
@@ -234,7 +234,7 @@ class WebSocket {
 Get list of available browser profiles.
 
 ```typescript
-import { getProfiles } from 'node-wreq';
+import { getProfiles } from 'wreq-js';
 
 const profiles = getProfiles();
 
@@ -257,4 +257,4 @@ Please read the [Contributing Guide](CONTRIBUTING.md).
 - [wreq](https://github.com/0x676e67/wreq) — Rust HTTP client with browser impersonation
 - [wreq-util](https://github.com/0x676e67/wreq-util) — Upstream utility project that tracks and ships browser fingerprint updates rapidly
 - [Neon](https://neon-bindings.com/) — Rust ↔ Node.js bindings
-- Original Node.js wrapper: [will-work-for-meal/node-wreq](https://github.com/will-work-for-meal/node-wreq) — clean, well-written baseline this fork builds on
+- Original Node.js wrapper: [will-work-for-meal/node-wreq](https://github.com/will-work-for-meal/node-wreq) (named node-wreq) — clean, well-written baseline this fork builds on
