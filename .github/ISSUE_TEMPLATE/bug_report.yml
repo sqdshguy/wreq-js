@@ -31,7 +31,7 @@ body:
       description: Minimal code to reproduce the issue
       render: typescript
       placeholder: |
-        import { request } from 'node-wreq';
+        import { request } from 'wreq-js';
 
         const response = await request({
           url: 'https://example.com',
@@ -53,8 +53,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: node-wreq Version
-      description: What version of node-wreq are you using?
+      label: wreq-js Version
+      description: What version of wreq-js are you using?
       placeholder: e.g., 0.1.0
     validations:
       required: true
@@ -86,7 +86,7 @@ body:
     id: installation
     attributes:
       label: Installation Method
-      description: How did you install node-wreq?
+      description: How did you install wreq-js?
       options:
         - npm
         - yarn
