@@ -4,6 +4,8 @@
 
 > **Node.js wrapper for [wreq](https://github.com/0x676e67/wreq)** — A powerful Rust HTTP client with browser impersonation capabilities.
 
+> **Note:** This is a fork of [will-work-for-meal/node-wreq](https://github.com/will-work-for-meal/node-wreq) with personal updates and more frequent dependency updates (wreq-util, etc.).
+
 ## ✨ Features
 
 - ⚡ **Native Performance** — 50-100x faster than curl-impersonate (no process spawning)
