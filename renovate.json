@@ -1,0 +1,47 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:best-practices"],
+  "schedule": ["after 10pm every weekday", "before 5am every weekday"],
+  "prHourlyLimit": 2,
+  "prConcurrentLimit": 10,
+  "rangeStrategy": "replace",
+  "pinDigests": false,
+  "packageRules": [
+    {
+      "description": "Completely disable version pinning PRs",
+      "matchUpdateTypes": ["pin"],
+      "enabled": false
+    },
+    {
+      "description": "Completely disable digest pinning PRs",
+      "matchUpdateTypes": ["pinDigest"],
+      "enabled": false
+    },
+    {
+      "description": "Disable updates to already-pinned digests",
+      "matchUpdateTypes": ["digest"],
+      "enabled": false
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true,
+      "automerge": false,
+      "pinDigests": false
+    },
+    {
+      "matchUpdateTypes": ["minor", "patch"],
+      "matchDepTypes": ["devDependencies"],
+      "automerge": true,
+      "minimumReleaseAge": "3 days",
+      "pinDigests": false
+    },
+    {
+      "matchUpdateTypes": ["patch"],
+      "matchDepTypes": ["dependencies"],
+      "automerge": true,
+      "minimumReleaseAge": "14 days",
+      "pinDigests": false
+    }
+  ]
+}
+
