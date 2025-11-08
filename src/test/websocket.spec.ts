@@ -14,7 +14,7 @@ describe("WebSocket", () => {
 
     const ws = await websocket({
       url: "wss://echo.websocket.org",
-      browser: "chrome_137",
+      browser: "chrome_142",
       onMessage: (data) => {
         messages.push(data);
       },
@@ -49,7 +49,7 @@ describe("WebSocket", () => {
 
     const ws = await websocket({
       url: "wss://echo.websocket.org",
-      browser: "chrome_137",
+      browser: "chrome_142",
       onMessage: (data) => {
         messages.push(data);
       },
@@ -102,7 +102,7 @@ describe("WebSocket", () => {
     const [ws1, ws2] = await Promise.all([
       websocket({
         url: "wss://echo.websocket.org",
-        browser: "chrome_137",
+        browser: "chrome_142",
         onMessage: (data) => ws1Messages.push(data),
         onClose: () => {},
         onError: () => {},
