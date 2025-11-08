@@ -8,12 +8,15 @@ use neon::prelude::*;
 use neon::types::buffer::TypedArray;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::{mpsc, Semaphore};
 use websocket::{
     connect_websocket, get_connection, remove_connection, store_connection, WebSocketOptions,
     WS_RUNTIME,
 };
 use wreq::ws::message::Message;
 use wreq_util::Emulation;
+
+const WS_EVENT_BUFFER: usize = 64;
 
 // Parse browser string to Emulation enum using serde
 fn parse_emulation(browser: &str) -> Emulation {
@@ -141,21 +144,19 @@ fn request(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let options = js_object_to_request_options(&mut cx, options_obj)?;
 
     // Create a promise
-    let channel = cx.channel();
     let (deferred, promise) = cx.promise();
+    let settle_channel = cx.channel();
 
     HTTP_RUNTIME.spawn(async move {
         let result = make_request(options).await;
 
         // Send result back to JS
-        deferred.settle_with(&channel, move |mut cx| {
-            match result {
-                Ok(response) => response_to_js_object(&mut cx, response),
-                Err(e) => {
-                    // Format error with full chain for better debugging
-                    let error_msg = format!("{:#}", e);
-                    cx.throw_error(error_msg)
-                }
+        deferred.settle_with(&settle_channel, move |mut cx| match result {
+            Ok(response) => response_to_js_object(&mut cx, response),
+            Err(e) => {
+                // Format error with full chain for better debugging
+                let error_msg = format!("{:#}", e);
+                cx.throw_error(error_msg)
             }
         });
     });
@@ -228,75 +229,108 @@ fn websocket_connect(mut cx: FunctionContext) -> JsResult<JsPromise> {
     };
 
     // Create a promise
-    let channel = cx.channel();
     let (deferred, promise) = cx.promise();
+    let callbacks_channel = cx.channel();
+    let settle_channel = callbacks_channel.clone();
 
     // Keep callbacks alive
     let on_message = Arc::new(on_message.root(&mut cx));
     let on_close = on_close_opt.map(|f| Arc::new(f.root(&mut cx)));
     let on_error = on_error_opt.map(|f| Arc::new(f.root(&mut cx)));
 
-    // Spawn async task
-    std::thread::spawn(move || {
-        let result: Result<_, anyhow::Error> = WS_RUNTIME.block_on(async {
-            // Connect to WebSocket
+    WS_RUNTIME.spawn(async move {
+        let result: Result<u64, anyhow::Error> = async {
             let (connection, mut receiver) = connect_websocket(options).await?;
+            let id = store_connection(connection);
 
-            // Start message receiver loop
-            let channel_clone = channel.clone();
-            let on_message_clone = on_message.clone();
-            let on_close_clone = on_close.clone();
-            let on_error_clone = on_error.clone();
+            let (events_tx, mut events_rx) = mpsc::channel::<WsEvent>(WS_EVENT_BUFFER);
+            let receiver_tx = events_tx.clone();
 
             tokio::spawn(async move {
                 while let Some(msg_result) = receiver.next().await {
                     match msg_result {
-                        Ok(msg) => {
-                            match msg {
-                                Message::Text(text) => {
-                                    let text = text.to_string();
-                                    let on_message_ref = on_message_clone.clone();
-                                    channel_clone.send(move |mut cx| {
-                                        let cb = on_message_ref.to_inner(&mut cx);
-                                        let this = cx.undefined();
-                                        let args = vec![cx.string(text).upcast()];
-                                        cb.call(&mut cx, this, args)?;
-                                        Ok(())
-                                    });
-                                }
-                                Message::Binary(data) => {
-                                    let data = data.to_vec();
-                                    let on_message_ref = on_message_clone.clone();
-                                    channel_clone.send(move |mut cx| {
-                                        let cb = on_message_ref.to_inner(&mut cx);
-                                        let this = cx.undefined();
-                                        let mut buffer = cx.buffer(data.len())?;
-                                        buffer.as_mut_slice(&mut cx).copy_from_slice(&data);
-                                        let args = vec![buffer.upcast()];
-                                        cb.call(&mut cx, this, args)?;
-                                        Ok(())
-                                    });
-                                }
-                                Message::Close(_) => {
-                                    if let Some(on_close_ref) = on_close_clone.as_ref() {
-                                        let on_close_ref = on_close_ref.clone();
-                                        channel_clone.send(move |mut cx| {
-                                            let cb = on_close_ref.to_inner(&mut cx);
-                                            let this = cx.undefined();
-                                            cb.call(&mut cx, this, vec![])?;
-                                            Ok(())
-                                        });
-                                    }
-                                    break;
-                                }
-                                _ => {
-                                    // Ignore Ping/Pong messages
-                                }
+                        Ok(Message::Text(text)) => {
+                            if receiver_tx
+                                .send(WsEvent::Text(text.to_string()))
+                                .await
+                                .is_err()
+                            {
+                                break;
                             }
                         }
+                        Ok(Message::Binary(data)) => {
+                            if receiver_tx
+                                .send(WsEvent::Binary(data.to_vec()))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Ok(Message::Close(_)) => {
+                            let _ = receiver_tx.send(WsEvent::Close).await;
+                            break;
+                        }
+                        Ok(_) => {
+                            // Ignore Ping/Pong
+                        }
                         Err(e) => {
+                            let _ = receiver_tx.send(WsEvent::Error(format!("{:#}", e))).await;
+                            let _ = receiver_tx.send(WsEvent::Close).await;
+                            break;
+                        }
+                    }
+                }
+
+                let _ = receiver_tx.send(WsEvent::Close).await;
+            });
+
+            drop(events_tx);
+
+            let on_message_clone = on_message.clone();
+            let on_close_clone = on_close.clone();
+            let on_error_clone = on_error.clone();
+            let channel_clone = callbacks_channel.clone();
+            let permits_consumer = Arc::new(Semaphore::new(WS_EVENT_BUFFER));
+
+            tokio::spawn(async move {
+                let mut close_emitted = false;
+                while let Some(event) = events_rx.recv().await {
+                    match event {
+                        WsEvent::Text(text) => {
+                            let permit = match permits_consumer.clone().acquire_owned().await {
+                                Ok(permit) => permit,
+                                Err(_) => break,
+                            };
+                            let on_message_ref = on_message_clone.clone();
+                            channel_clone.send(move |mut cx| {
+                                let _permit = permit;
+                                let cb = on_message_ref.to_inner(&mut cx);
+                                let this = cx.undefined();
+                                let args = vec![cx.string(text).upcast()];
+                                cb.call(&mut cx, this, args)?;
+                                Ok(())
+                            });
+                        }
+                        WsEvent::Binary(data) => {
+                            let permit = match permits_consumer.clone().acquire_owned().await {
+                                Ok(permit) => permit,
+                                Err(_) => break,
+                            };
+                            let on_message_ref = on_message_clone.clone();
+                            channel_clone.send(move |mut cx| {
+                                let _permit = permit;
+                                let cb = on_message_ref.to_inner(&mut cx);
+                                let this = cx.undefined();
+                                let mut buffer = cx.buffer(data.len())?;
+                                buffer.as_mut_slice(&mut cx).copy_from_slice(&data);
+                                let args = vec![buffer.upcast()];
+                                cb.call(&mut cx, this, args)?;
+                                Ok(())
+                            });
+                        }
+                        WsEvent::Error(error_msg) => {
                             if let Some(on_error_ref) = on_error_clone.as_ref() {
-                                let error_msg = format!("{:#}", e);
                                 let on_error_ref = on_error_ref.clone();
                                 channel_clone.send(move |mut cx| {
                                     let cb = on_error_ref.to_inner(&mut cx);
@@ -306,31 +340,53 @@ fn websocket_connect(mut cx: FunctionContext) -> JsResult<JsPromise> {
                                     Ok(())
                                 });
                             }
-                            break;
+                        }
+                        WsEvent::Close => {
+                            if !close_emitted {
+                                if let Some(on_close_ref) = on_close_clone.as_ref() {
+                                    let on_close_ref = on_close_ref.clone();
+                                    channel_clone.send(move |mut cx| {
+                                        let cb = on_close_ref.to_inner(&mut cx);
+                                        let this = cx.undefined();
+                                        cb.call(&mut cx, this, vec![])?;
+                                        Ok(())
+                                    });
+                                }
+                                close_emitted = true;
+                            }
                         }
                     }
                 }
+
+                if !close_emitted {
+                    if let Some(on_close_ref) = on_close_clone.as_ref() {
+                        let on_close_ref = on_close_ref.clone();
+                        channel_clone.send(move |mut cx| {
+                            let cb = on_close_ref.to_inner(&mut cx);
+                            let this = cx.undefined();
+                            cb.call(&mut cx, this, vec![])?;
+                            Ok(())
+                        });
+                    }
+                }
+
+                remove_connection(id);
             });
 
-            Ok(connection)
-        });
+            Ok(id)
+        }
+        .await;
 
-        // Send result back to JS
-        deferred.settle_with(&channel, move |mut cx| {
-            match result {
-                Ok(connection) => {
-                    // Store connection and get ID
-                    let id = store_connection(connection);
-
-                    let obj = cx.empty_object();
-                    let id_num = cx.number(id as f64);
-                    obj.set(&mut cx, "_id", id_num)?;
-                    Ok(obj)
-                }
-                Err(e) => {
-                    let error_msg = format!("{:#}", e);
-                    cx.throw_error(error_msg)
-                }
+        deferred.settle_with(&settle_channel, move |mut cx| match result {
+            Ok(id) => {
+                let obj = cx.empty_object();
+                let id_num = cx.number(id as f64);
+                obj.set(&mut cx, "_id", id_num)?;
+                Ok(obj)
+            }
+            Err(e) => {
+                let error_msg = format!("{:#}", e);
+                cx.throw_error(error_msg)
             }
         });
     });
@@ -353,8 +409,8 @@ fn websocket_send(mut cx: FunctionContext) -> JsResult<JsPromise> {
         None => return cx.throw_error("WebSocket connection not found"),
     };
 
-    let channel = cx.channel();
     let (deferred, promise) = cx.promise();
+    let settle_channel = cx.channel();
 
     // Check if data is string or buffer
     let is_text = data.is_a::<JsString, _>(&mut cx);
@@ -368,15 +424,13 @@ fn websocket_send(mut cx: FunctionContext) -> JsResult<JsPromise> {
         return cx.throw_error("Data must be a string or Buffer");
     };
 
-    std::thread::spawn(move || {
-        let result = WS_RUNTIME.block_on(async {
-            match send_data {
-                SendData::Text(text) => connection.send_text(text).await,
-                SendData::Binary(data) => connection.send_binary(data).await,
-            }
-        });
+    WS_RUNTIME.spawn(async move {
+        let result = match send_data {
+            SendData::Text(text) => connection.send_text(text).await,
+            SendData::Binary(data) => connection.send_binary(data).await,
+        };
 
-        deferred.settle_with(&channel, move |mut cx| match result {
+        deferred.settle_with(&settle_channel, move |mut cx| match result {
             Ok(()) => Ok(cx.undefined()),
             Err(e) => {
                 let error_msg = format!("{:#}", e);
@@ -393,6 +447,13 @@ enum SendData {
     Binary(Vec<u8>),
 }
 
+enum WsEvent {
+    Text(String),
+    Binary(Vec<u8>),
+    Close,
+    Error(String),
+}
+
 // WebSocket close function
 fn websocket_close(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let ws_obj = cx.argument::<JsObject>(0)?;
@@ -407,16 +468,16 @@ fn websocket_close(mut cx: FunctionContext) -> JsResult<JsPromise> {
         None => return cx.throw_error("WebSocket connection not found"),
     };
 
-    let channel = cx.channel();
     let (deferred, promise) = cx.promise();
+    let settle_channel = cx.channel();
 
-    std::thread::spawn(move || {
-        let result = WS_RUNTIME.block_on(connection.close());
+    WS_RUNTIME.spawn(async move {
+        let result = connection.close().await;
 
         // Remove connection from storage after closing
         remove_connection(id);
 
-        deferred.settle_with(&channel, move |mut cx| match result {
+        deferred.settle_with(&settle_channel, move |mut cx| match result {
             Ok(()) => Ok(cx.undefined()),
             Err(e) => {
                 let error_msg = format!("{:#}", e);

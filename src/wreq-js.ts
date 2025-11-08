@@ -1,4 +1,10 @@
-import type { BrowserProfile, NativeWebSocketConnection, RequestOptions, Response, WebSocketOptions } from "./types";
+import type {
+  BrowserProfile,
+  NativeWebSocketConnection,
+  RequestOptions,
+  Response,
+  WebSocketOptions,
+} from "./types";
 import { RequestError } from "./types";
 
 interface NativeWebSocketOptions {
@@ -18,6 +24,8 @@ let nativeBinding: {
   websocketSend: (ws: NativeWebSocketConnection, data: string | Buffer) => Promise<void>;
   websocketClose: (ws: NativeWebSocketConnection) => Promise<void>;
 };
+
+let cachedProfiles: BrowserProfile[] | undefined;
 
 function loadNativeBinding() {
   const platform = process.platform;
@@ -68,6 +76,13 @@ function loadNativeBinding() {
 }
 
 nativeBinding = loadNativeBinding();
+
+const websocketFinalizer =
+  typeof FinalizationRegistry === "function"
+    ? new FinalizationRegistry<NativeWebSocketConnection>((connection: NativeWebSocketConnection) => {
+        void nativeBinding.websocketClose(connection).catch(() => undefined);
+      })
+    : undefined;
 
 /**
  * Make an HTTP request with browser impersonation
@@ -125,7 +140,11 @@ export async function request(options: RequestOptions): Promise<Response> {
  * ```
  */
 export function getProfiles(): BrowserProfile[] {
-  return nativeBinding.getProfiles() as BrowserProfile[];
+  if (!cachedProfiles) {
+    cachedProfiles = nativeBinding.getProfiles() as BrowserProfile[];
+  }
+
+  return cachedProfiles;
 }
 
 /**
@@ -206,9 +225,16 @@ export async function post(
  */
 export class WebSocket {
   private _connection: NativeWebSocketConnection;
+  private _finalizerToken: NativeWebSocketConnection | undefined;
+  private _closed = false;
 
   constructor(connection: NativeWebSocketConnection) {
     this._connection = connection;
+
+    if (websocketFinalizer) {
+      this._finalizerToken = connection;
+      websocketFinalizer.register(this, connection, connection);
+    }
   }
 
   /**
@@ -226,6 +252,17 @@ export class WebSocket {
    * Close the WebSocket connection
    */
   async close(): Promise<void> {
+    if (this._closed) {
+      return;
+    }
+
+    this._closed = true;
+
+    if (this._finalizerToken && websocketFinalizer) {
+      websocketFinalizer.unregister(this._finalizerToken);
+      this._finalizerToken = undefined;
+    }
+
     try {
       await nativeBinding.websocketClose(this._connection);
     } catch (error) {

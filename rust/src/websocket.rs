@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use neon::prelude::*;
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::Mutex;
 use wreq::ws::message::Message;
 use wreq::ws::WebSocket;
 use wreq_util::Emulation;
-use once_cell::sync::Lazy;
 
 // Global storage for WebSocket connections
 static WS_CONNECTIONS: Lazy<StdMutex<HashMap<u64, Arc<WsConnection>>>> =
@@ -37,9 +37,7 @@ pub struct WsConnection {
 }
 
 impl WsConnection {
-    pub fn new(
-        sender: futures_util::stream::SplitSink<WebSocket, Message>,
-    ) -> Self {
+    pub fn new(sender: futures_util::stream::SplitSink<WebSocket, Message>) -> Self {
         Self {
             sender: Arc::new(Mutex::new(sender)),
         }
@@ -104,10 +102,11 @@ pub fn remove_connection(id: u64) {
 }
 
 /// Create WebSocket connection
-pub async fn connect_websocket(options: WebSocketOptions) -> Result<(WsConnection, futures_util::stream::SplitStream<WebSocket>)> {
+pub async fn connect_websocket(
+    options: WebSocketOptions,
+) -> Result<(WsConnection, futures_util::stream::SplitStream<WebSocket>)> {
     // Build client with emulation and proxy
-    let mut client_builder = wreq::Client::builder()
-        .emulation(options.emulation);
+    let mut client_builder = wreq::Client::builder().emulation(options.emulation);
 
     // Apply proxy if present
     if let Some(proxy_url) = &options.proxy {
