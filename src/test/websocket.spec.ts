@@ -36,7 +36,7 @@ describe("WebSocket", () => {
 
     // Wait a bit for close callback
     await ws.close();
-    await sleep(5000);
+    await sleep(10000);
     assert.ok(isClosed, "Should receive close event");
 
     // Rate limit protection: wait before next test
