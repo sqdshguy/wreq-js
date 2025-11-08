@@ -1,10 +1,4 @@
-import type {
-  BrowserProfile,
-  NativeWebSocketConnection,
-  RequestOptions,
-  Response,
-  WebSocketOptions,
-} from "./types";
+import type { BrowserProfile, NativeWebSocketConnection, RequestOptions, Response, WebSocketOptions } from "./types";
 import { RequestError } from "./types";
 
 interface NativeWebSocketOptions {
