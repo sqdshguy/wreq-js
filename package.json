@@ -24,21 +24,24 @@
     "ci:biome": "biome ci ."
   },
   "keywords": [
-    "browser",
+    "browser-emulation",
     "fingerprint",
-    "bypass",
-    "anti-bot",
     "tls",
     "http2",
     "impersonation",
     "web-scraping",
-    "crawler",
     "web-scraper",
-    "wreq",
+    "crawler",
+    "fetch",
+    "http-client",
+    "rust",
+    "neon",
+    "native-addon",
     "ja3",
-    "tls-fingerprint",
     "ja4",
-    "browser-fingerprint-bypass"
+    "tls-fingerprint",
+    "wreq",
+    "browser"
   ],
   "author": "Oleksandr Herasymov <herasymov7@icloud.com>",
   "contributors": [
