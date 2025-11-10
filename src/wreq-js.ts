@@ -6,6 +6,7 @@ import type {
   CookieMode,
   CreateSessionOptions,
   HeadersInit,
+  HeaderTuple,
   NativeResponse,
   NativeWebSocketConnection,
   RequestOptions,
@@ -18,7 +19,7 @@ import { RequestError } from "./types";
 interface NativeWebSocketOptions {
   url: string;
   browser: BrowserProfile;
-  headers: Record<string, string>;
+  headers: Record<string, string> | HeaderTuple[];
   proxy?: string;
   onMessage: (data: string | Buffer) => void;
   onClose?: () => void;
@@ -299,6 +300,16 @@ export class Headers implements Iterable<[string, string]> {
 
     for (const [name, value] of this) {
       result[name] = value;
+    }
+
+    return result;
+  }
+
+  toTuples(): HeaderTuple[] {
+    const result: HeaderTuple[] = [];
+
+    for (const [name, value] of this) {
+      result.push([name, value]);
     }
 
     return result;
@@ -712,14 +723,14 @@ export async function fetch(input: string | URL, init?: WreqRequestInit): Promis
 
   ensureBodyAllowed(method, body);
 
-  const headerRecord = headers.toObject();
-  const hasHeaders = Object.keys(headerRecord).length > 0;
+  const headerTuples = headers.toTuples();
+  const hasHeaders = headerTuples.length > 0;
 
   const requestOptions: RequestOptions = {
     url,
     method,
     ...(config.browser && { browser: config.browser }),
-    ...(hasHeaders && { headers: headerRecord }),
+    ...(hasHeaders && { headers: headerTuples }),
     ...(body !== undefined && { body }),
     ...(config.proxy !== undefined && { proxy: config.proxy }),
     ...(config.timeout !== undefined && { timeout: config.timeout }),
