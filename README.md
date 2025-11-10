@@ -92,6 +92,19 @@ const response = await fetch('https://api.example.com/data', {
 });
 ```
 
+By default, browser emulation headers (like `Accept`, `Accept-Language`, `User-Agent`, etc.) are automatically added and may be appended to your custom headers. To prevent this and use **only** your custom headers:
+
+```typescript
+const response = await fetch('https://api.example.com/data', {
+  browser: 'chrome_142',
+  headers: {
+    'Accept': '*/*',
+    'User-Agent': 'CustomBot/1.0',
+  },
+  disableDefaultHeaders: true, // Disable emulation headers
+});
+```
+
 ### POST Request
 
 ```typescript
@@ -164,6 +177,7 @@ interface RequestInit {
   cookieMode?: 'session' | 'ephemeral';
   session?: Session;
   sessionId?: string;
+  disableDefaultHeaders?: boolean; // Prevent emulation headers from being appended
 }
 ```
 
