@@ -97,6 +97,10 @@ export async function startLocalTestServer(): Promise<LocalTestServer> {
       return json(res, { "user-agent": req.headers["user-agent"] ?? "" });
     }
 
+    if (path === "/headers") {
+      return json(res, { headers: canonicalizeHeaders(req) });
+    }
+
     if (path === "/cookies") {
       return json(res, { cookies: parseCookies(req.headers.cookie) });
     }
