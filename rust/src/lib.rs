@@ -7,10 +7,11 @@ use client::{
     RequestOptions, Response, HTTP_RUNTIME,
 };
 use futures_util::StreamExt;
+use indexmap::IndexMap;
 use neon::prelude::*;
-use neon::types::buffer::TypedArray;
-use neon::types::JsBoolean;
-use std::collections::HashMap;
+use neon::types::{
+    buffer::TypedArray, JsArray, JsBoolean, JsNull, JsObject, JsString, JsUndefined, JsValue,
+};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Semaphore};
 use websocket::{
@@ -28,6 +29,77 @@ fn parse_emulation(browser: &str) -> Emulation {
     // If deserialization fails, default to Chrome142
     serde_json::from_value(serde_json::Value::String(browser.to_string()))
         .unwrap_or(Emulation::Chrome142)
+}
+
+fn coerce_header_value(cx: &mut FunctionContext, value: Handle<JsValue>) -> NeonResult<String> {
+    if let Ok(js_str) = value.downcast::<JsString, _>(cx) {
+        return Ok(js_str.value(cx));
+    }
+
+    let converted = value.to_string(cx)?;
+    Ok(converted.value(cx))
+}
+
+fn parse_header_tuple(cx: &mut FunctionContext, tuple: Handle<JsArray>) -> NeonResult<(String, String)> {
+    if tuple.len(cx) < 2 {
+        return cx.throw_type_error("Header tuple must contain a name and a value");
+    }
+
+    let name_value = tuple.get(cx, 0)?;
+    let value_value = tuple.get(cx, 1)?;
+    let name = coerce_header_value(cx, name_value)?;
+    let value = coerce_header_value(cx, value_value)?;
+
+    Ok((name, value))
+}
+
+fn parse_headers_from_array(cx: &mut FunctionContext, array: Handle<JsArray>) -> NeonResult<IndexMap<String, String>> {
+    let mut headers = IndexMap::new();
+    let len = array.len(cx);
+
+    for i in 0..len {
+        let element: Handle<JsValue> = array.get(cx, i)?;
+        let tuple = element.downcast::<JsArray, _>(cx).or_throw(cx)?;
+        let (name, value) = parse_header_tuple(cx, tuple)?;
+        headers.insert(name, value);
+    }
+
+    Ok(headers)
+}
+
+fn parse_headers_from_object(cx: &mut FunctionContext, obj: Handle<JsObject>) -> NeonResult<IndexMap<String, String>> {
+    let mut headers = IndexMap::new();
+    let keys = obj.get_own_property_names(cx)?;
+    let keys_vec = keys.to_vec(cx)?;
+
+    for key_val in keys_vec {
+        if let Ok(key_str) = key_val.downcast::<JsString, _>(cx) {
+            let key = key_str.value(cx);
+            let value = obj.get(cx, key.as_str())?;
+            let value = coerce_header_value(cx, value)?;
+            headers.insert(key, value);
+        }
+    }
+
+    Ok(headers)
+}
+
+fn parse_headers_from_value(cx: &mut FunctionContext, value: Handle<JsValue>) -> NeonResult<IndexMap<String, String>> {
+    if value.is_a::<JsUndefined, _>(cx) || value.is_a::<JsNull, _>(cx) {
+        return Ok(IndexMap::new());
+    }
+
+    if value.is_a::<JsArray, _>(cx) {
+        let array = value.downcast::<JsArray, _>(cx).or_throw(cx)?;
+        return parse_headers_from_array(cx, array);
+    }
+
+    if value.is_a::<JsObject, _>(cx) {
+        let obj = value.downcast::<JsObject, _>(cx).or_throw(cx)?;
+        return parse_headers_from_object(cx, obj);
+    }
+
+    cx.throw_type_error("headers must be an array or object")
 }
 
 // Convert JS object to RequestOptions
@@ -56,20 +128,11 @@ fn js_object_to_request_options(
         .unwrap_or_else(|| "GET".to_string());
 
     // Get headers (optional)
-    let mut headers = HashMap::new();
-    if let Ok(Some(headers_obj)) = obj.get_opt::<JsObject, _, _>(cx, "headers") {
-        let keys = headers_obj.get_own_property_names(cx)?;
-        let keys_vec = keys.to_vec(cx)?;
-
-        for key_val in keys_vec {
-            if let Ok(key_str) = key_val.downcast::<JsString, _>(cx) {
-                let key = key_str.value(cx);
-                if let Ok(value) = headers_obj.get::<JsString, _, _>(cx, key.as_str()) {
-                    headers.insert(key, value.value(cx));
-                }
-            }
-        }
-    }
+    let headers = if let Ok(Some(headers_val)) = obj.get_opt(cx, "headers") {
+        parse_headers_from_value(cx, headers_val)?
+    } else {
+        IndexMap::new()
+    };
 
     // Get body (optional)
     let body = obj
@@ -278,20 +341,11 @@ fn websocket_connect(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let emulation = parse_emulation(&browser_str);
 
     // Get headers (optional)
-    let mut headers = HashMap::new();
-    if let Ok(Some(headers_obj)) = options_obj.get_opt::<JsObject, _, _>(&mut cx, "headers") {
-        let keys = headers_obj.get_own_property_names(&mut cx)?;
-        let keys_vec = keys.to_vec(&mut cx)?;
-
-        for key_val in keys_vec {
-            if let Ok(key_str) = key_val.downcast::<JsString, _>(&mut cx) {
-                let key = key_str.value(&mut cx);
-                if let Ok(value) = headers_obj.get::<JsString, _, _>(&mut cx, key.as_str()) {
-                    headers.insert(key, value.value(&mut cx));
-                }
-            }
-        }
-    }
+    let headers = if let Ok(Some(headers_value)) = options_obj.get_opt(&mut cx, "headers") {
+        parse_headers_from_value(&mut cx, headers_value)?
+    } else {
+        IndexMap::new()
+    };
 
     // Get proxy (optional)
     let proxy = options_obj
