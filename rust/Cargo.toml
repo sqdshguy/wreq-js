@@ -41,7 +41,7 @@ tokio-util = "0.7"
 
 # Global state management
 once_cell = "1.21"
-moka = { version = "0.12", features = ["sync"] }
+moka = { version = "0.12.11", features = ["sync"] }
 uuid = { version = "1", features = ["v4"] }
 
 [build-dependencies]
