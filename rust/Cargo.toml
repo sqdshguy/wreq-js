@@ -14,7 +14,7 @@ wreq = { version = "6.0.0-rc.23", default-features = false, features = ["cookies
 wreq-util = { version = "3.0.0-rc.7", features = ["emulation-serde", "emulation-rand"] }
 
 # Ordered collections for deterministic headers/cookies
-indexmap = "2.12"
+indexmap = "2.12.1"
 
 # WebSocket support
 futures-util = "0.3"
