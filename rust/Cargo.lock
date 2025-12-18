@@ -1705,9 +1705,9 @@ checksum = "f17a85883d4e6d00e8a97c586de764dabcc06133f7f1d55dce5cdc070ad7fe59"
 
 [[package]]
 name = "wreq"
-version = "6.0.0-rc.23"
+version = "6.0.0-rc.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7cd527a3265faac3ac44097ccccc76d901230b9bd2866e62d1c18dc348d7aa8"
+checksum = "c1070544d528e6d58fec754e40edfbb9b9128b75a9ceafe45b2d2f83720e38ff"
 dependencies = [
  "ahash",
  "boring2",

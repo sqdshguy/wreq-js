@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # HTTP client with browser impersonation
-wreq = { version = "6.0.0-rc.23", default-features = false, features = ["cookies", "gzip", "brotli", "deflate", "zstd", "charset", "system-proxy", "socks", "ws", "stream"] }
+wreq = { version = "6.0.0-rc.24", default-features = false, features = ["cookies", "gzip", "brotli", "deflate", "zstd", "charset", "system-proxy", "socks", "ws", "stream"] }
 wreq-util = { version = "3.0.0-rc.7", features = ["emulation-serde", "emulation-rand"] }
 
 # Ordered collections for deterministic headers/cookies
