@@ -1193,9 +1193,9 @@ dependencies = [
 
 [[package]]
 name = "system-configuration"
-version = "0.6.1"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c879d448e9d986b661742763247d3693ed13609438cf3d006f51f5368a5ba6b"
+checksum = "a13f3d0daba03132c0aa9767f98351b3488edc2c100cda2d2ec2b04f3d8d3c8b"
 dependencies = [
  "bitflags",
  "core-foundation",
@@ -1705,9 +1705,9 @@ checksum = "f17a85883d4e6d00e8a97c586de764dabcc06133f7f1d55dce5cdc070ad7fe59"
 
 [[package]]
 name = "wreq"
-version = "6.0.0-rc.24"
+version = "6.0.0-rc.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1070544d528e6d58fec754e40edfbb9b9128b75a9ceafe45b2d2f83720e38ff"
+checksum = "fc1ebf96d6462da95a3ca904161f05a10b8fd161c42f835eb4e50309d29982d3"
 dependencies = [
  "ahash",
  "boring2",
