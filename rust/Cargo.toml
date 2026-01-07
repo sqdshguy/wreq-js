@@ -34,7 +34,7 @@ anyhow = "1.0.100"
 
 # Async runtime
 tokio = { version = "1.48.0", features = ["rt-multi-thread", "sync", "macros"] }
-tokio-util = "0.7.17"
+tokio-util = "0.7.18"
 
 # Global state management
 moka = { version = "0.12.12", features = ["sync"] }
