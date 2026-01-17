@@ -10,6 +10,13 @@ if (!SELF_SIGNED_URL || !EXPIRED_URL) {
   throw new Error("HTTPS_SELF_SIGNED_URL and HTTPS_EXPIRED_URL must be set by the test runner");
 }
 
+/** Check if error message indicates a certificate verification failure */
+function isCertificateError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const msg = error.message.toLowerCase();
+  return msg.includes("certificate") || msg.includes("ssl") || msg.includes("tls");
+}
+
 describe("Insecure certificate verification", () => {
   test("rejects self-signed certificates by default", async () => {
     await assert.rejects(
@@ -17,12 +24,7 @@ describe("Insecure certificate verification", () => {
         browser: "chrome_142",
         timeout: 10_000,
       }),
-      (error: unknown) => {
-        return (
-          error instanceof Error &&
-          (error.message.includes("certificate") || error.message.includes("SSL") || error.message.includes("TLS"))
-        );
-      },
+      isCertificateError,
       "Should reject self-signed certificates by default",
     );
   });
@@ -46,15 +48,7 @@ describe("Insecure certificate verification", () => {
         browser: "chrome_142",
         timeout: 10_000,
       }),
-      (error: unknown) => {
-        return (
-          error instanceof Error &&
-          (error.message.includes("certificate") ||
-            error.message.includes("SSL") ||
-            error.message.includes("TLS") ||
-            error.message.includes("expired"))
-        );
-      },
+      isCertificateError,
       "Should reject expired certificates by default",
     );
   });
@@ -80,12 +74,7 @@ describe("Insecure certificate verification", () => {
         session.fetch(SELF_SIGNED_URL, {
           timeout: 10_000,
         }),
-        (error: unknown) => {
-          return (
-            error instanceof Error &&
-            (error.message.includes("certificate") || error.message.includes("SSL") || error.message.includes("TLS"))
-          );
-        },
+        isCertificateError,
         "Session should reject self-signed certificates by default",
       );
     } finally {
@@ -146,12 +135,7 @@ describe("Insecure certificate verification", () => {
         timeout: 10_000,
         // insecure not specified, should default to false
       }),
-      (error: unknown) => {
-        return (
-          error instanceof Error &&
-          (error.message.includes("certificate") || error.message.includes("SSL") || error.message.includes("TLS"))
-        );
-      },
+      isCertificateError,
       "Should validate certificates when insecure is not specified",
     );
   });
@@ -163,12 +147,7 @@ describe("Insecure certificate verification", () => {
         timeout: 10_000,
         insecure: false,
       }),
-      (error: unknown) => {
-        return (
-          error instanceof Error &&
-          (error.message.includes("certificate") || error.message.includes("SSL") || error.message.includes("TLS"))
-        );
-      },
+      isCertificateError,
       "Should validate certificates when insecure is explicitly false",
     );
   });
