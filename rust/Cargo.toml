@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # HTTP client with browser impersonation
-wreq = { version = "6.0.0-rc.26", default-features = false, features = ["cookies", "gzip", "brotli", "deflate", "zstd", "charset", "system-proxy", "socks", "ws", "stream", "webpki-roots"] }
+wreq = { version = "6.0.0-rc.27", default-features = false, features = ["cookies", "gzip", "brotli", "deflate", "zstd", "charset", "system-proxy", "socks", "ws", "stream", "webpki-roots"] }
 wreq-util = { version = "3.0.0-rc.9", features = ["emulation-serde", "emulation-rand"] }
 
 # WebSocket support
