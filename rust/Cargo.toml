@@ -17,7 +17,7 @@ wreq-util = { version = "3.0.0-rc.9", features = ["emulation-serde", "emulation-
 futures-util = "0.3"
 
 # Byte buffers for streaming bodies
-bytes = "1.11"
+bytes = "1.11.1"
 
 # Neon for Node.js bindings
 neon = { version = "1.1.1", default-features = false, features = ["napi-6"] }
