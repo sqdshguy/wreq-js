@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 [dependencies]
 # HTTP client with browser impersonation
 wreq = { version = "6.0.0-rc.28", default-features = false, features = ["cookies", "gzip", "brotli", "deflate", "zstd", "charset", "system-proxy", "socks", "ws", "stream", "webpki-roots"] }
-wreq-util = { version = "3.0.0-rc.9", features = ["emulation-serde", "emulation-rand"] }
+wreq-util = { version = "3.0.0-rc.10", features = ["emulation-serde", "emulation-rand"] }
 
 # WebSocket support
 futures-util = "0.3"
@@ -44,7 +44,7 @@ uuid = { version = "1.20.0", features = ["v4"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 strum = "0.27.2"
-wreq-util = { version = "3.0.0-rc.9", features = ["emulation-serde", "emulation-rand"] }
+wreq-util = { version = "3.0.0-rc.10", features = ["emulation-serde", "emulation-rand"] }
 
 [profile.release]
 opt-level = 3
