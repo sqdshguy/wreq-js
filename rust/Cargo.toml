@@ -14,7 +14,7 @@ wreq = { version = "6.0.0-rc.28", default-features = false, features = ["cookies
 wreq-util = { version = "3.0.0-rc.10", features = ["emulation-serde", "emulation-rand"] }
 
 # WebSocket support
-futures-util = "0.3"
+futures-util = "0.3.32"
 
 # Byte buffers for streaming bodies
 bytes = "1.11.1"
