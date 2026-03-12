@@ -111,6 +111,25 @@ describe("WebSocket", () => {
     await waitForClose(ws);
   });
 
+  test("constructor supports standalone custom emulation without browser/os", async () => {
+    const ws = new WreqWebSocket(WS_TEST_URL, {
+      emulation: {
+        headers: {
+          "User-Agent": "Standalone WS Constructor/1.0",
+        },
+      },
+    });
+
+    await waitForOpen(ws);
+
+    const messagePromise = waitForMessage(ws);
+    await ws.send("standalone-constructor");
+    assert.strictEqual(dataToString((await messagePromise).data), "standalone-constructor");
+
+    ws.close();
+    await waitForClose(ws);
+  });
+
   test("constructor supports protocols overload syntax", async () => {
     const url = new URL(WS_TEST_URL);
     url.searchParams.set("requireProtocol", "chat");
@@ -232,6 +251,23 @@ describe("WebSocket", () => {
 
     assert.strictEqual(ws.readyState, WreqWebSocket.OPEN);
     assert.strictEqual(openEvents, 1, "onopen should fire after await websocket(...) resolves");
+
+    ws.close();
+    await waitForClose(ws);
+  });
+
+  test("websocket(url, { emulation }) connects in standalone custom mode", async () => {
+    const ws = await websocket(WS_TEST_URL, {
+      emulation: {
+        headers: {
+          "User-Agent": "Standalone WS Helper/1.0",
+        },
+      },
+    });
+
+    const messagePromise = waitForMessage(ws);
+    await ws.send("standalone-helper");
+    assert.strictEqual(dataToString((await messagePromise).data), "standalone-helper");
 
     ws.close();
     await waitForClose(ws);
@@ -600,7 +636,7 @@ describe("WebSocket", () => {
     }
   });
 
-  test("session.websocket rejects browser/os/proxy overrides", async () => {
+  test("session.websocket rejects browser/os/emulation/proxy overrides", async () => {
     const session = await createSession({ browser: "chrome_142" });
 
     try {
@@ -612,6 +648,12 @@ describe("WebSocket", () => {
 
       await assert.rejects(
         session.websocket(WS_TEST_URL, { os: "windows" } as never),
+        (error: unknown) =>
+          error instanceof RequestError && /not supported in session\.websocket\(\)/.test(error.message),
+      );
+
+      await assert.rejects(
+        session.websocket(WS_TEST_URL, { emulation: { headers: { "X-Test": "alpha" } } } as never),
         (error: unknown) =>
           error instanceof RequestError && /not supported in session\.websocket\(\)/.test(error.message),
       );

@@ -10,9 +10,10 @@ use wreq::cookie::{CookieStore, Cookies};
 use wreq::header::OrigHeaderMap;
 use wreq::ws::WebSocket;
 use wreq::ws::message::{CloseCode, CloseFrame, Message};
-use wreq_util::{Emulation, EmulationOS, EmulationOption};
 
 use crate::client::{get_session_cookie_jar, get_transport_client};
+use crate::custom_emulation::resolve_emulation;
+use wreq_util::{Emulation as BrowserEmulation, EmulationOS as BrowserEmulationOS};
 
 // Global storage for WebSocket connections
 static WS_CONNECTIONS: LazyLock<DashMap<u64, Arc<WsConnection>>> = LazyLock::new(DashMap::new);
@@ -22,8 +23,9 @@ static NEXT_WS_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Debug, Clone)]
 pub struct WebSocketOptions {
     pub url: String,
-    pub emulation: Emulation,
-    pub emulation_os: EmulationOS,
+    pub browser: Option<BrowserEmulation>,
+    pub browser_os: Option<BrowserEmulationOS>,
+    pub emulation_json: Option<Arc<str>>,
     pub headers: Vec<(String, String)>,
     pub protocols: Vec<String>,
     pub proxy: Option<Arc<str>>,
@@ -122,10 +124,11 @@ pub async fn connect_websocket(
     WebSocketUpgradeMetadata,
 )> {
     // Build client with emulation and proxy
-    let emulation = EmulationOption::builder()
-        .emulation(options.emulation)
-        .emulation_os(options.emulation_os)
-        .build();
+    let emulation = resolve_emulation(
+        options.browser,
+        options.browser_os,
+        options.emulation_json.as_deref(),
+    )?;
     let mut client_builder = wreq::Client::builder().emulation(emulation);
 
     // Apply proxy if present

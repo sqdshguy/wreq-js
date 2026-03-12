@@ -170,4 +170,30 @@ describe("HTTP sessions", () => {
       await session.close();
     }
   });
+
+  test("createSession({ emulation }) works without browser/os and reuses standalone custom emulation", async () => {
+    const session = await createSession({
+      emulation: {
+        headers: {
+          "User-Agent": "Standalone Session/1.0",
+          "X-Session-Emulation": "alpha",
+        },
+      },
+    });
+
+    try {
+      const first = await session.fetch(httpUrl("/headers"), { timeout: 10_000 });
+      const second = await session.fetch(httpUrl("/headers"), { timeout: 10_000 });
+
+      const firstBody = await first.json<{ headers: Record<string, string> }>();
+      const secondBody = await second.json<{ headers: Record<string, string> }>();
+
+      assert.strictEqual(firstBody.headers["User-Agent"], "Standalone Session/1.0");
+      assert.strictEqual(firstBody.headers["X-Session-Emulation"], "alpha");
+      assert.strictEqual(secondBody.headers["User-Agent"], "Standalone Session/1.0");
+      assert.strictEqual(secondBody.headers["X-Session-Emulation"], "alpha");
+    } finally {
+      await session.close();
+    }
+  });
 });

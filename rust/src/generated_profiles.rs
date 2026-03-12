@@ -112,10 +112,4 @@ pub const BROWSER_PROFILES: &[&str] = &[
     "okhttp_5",
 ];
 
-pub const OPERATING_SYSTEMS: &[&str] = &[
-    "windows",
-    "macos",
-    "linux",
-    "android",
-    "ios",
-];
+pub const OPERATING_SYSTEMS: &[&str] = &["windows", "macos", "linux", "android", "ios"];

@@ -4,14 +4,25 @@ import { createRequire } from "node:module";
 import { Readable } from "node:stream";
 import { ReadableStream } from "node:stream/web";
 import type {
+  AlpnProtocol,
+  AlpsProtocol,
   BodyInit,
   BrowserProfile,
   CookieMode,
   CreateSessionOptions,
   CreateTransportOptions,
+  CustomEmulationOptions,
+  CustomHttp1Options,
+  CustomHttp2Options,
+  CustomTlsOptions,
   EmulationOS,
   HeadersInit,
   HeaderTuple,
+  Http2ExperimentalSetting,
+  Http2Priority,
+  Http2PseudoHeaderId,
+  Http2SettingId,
+  Http2StreamDependency,
   LegacySessionWebSocketOptions,
   LegacyWebSocketOptions,
   NativeResponse,
@@ -19,6 +30,7 @@ import type {
   RequestOptions,
   SessionHandle,
   SessionWebSocketOptions,
+  TlsVersion,
   WebSocketBinaryType,
   WebSocketCloseEvent,
   WebSocketErrorEvent,
@@ -41,8 +53,9 @@ interface NativeWebSocketCloseOptions {
 
 interface NativeWebSocketOptions {
   url: string;
-  browser: BrowserProfile;
-  os: EmulationOS;
+  browser?: BrowserProfile;
+  os?: EmulationOS;
+  emulationJson?: string;
   headers: HeaderTuple[];
   protocols?: string[];
   proxy?: string;
@@ -67,8 +80,9 @@ interface NativeSessionOptions {
 }
 
 interface NativeTransportOptions {
-  browser: BrowserProfile;
-  os: EmulationOS;
+  browser?: BrowserProfile;
+  os?: EmulationOS;
+  emulationJson?: string;
   proxy?: string;
   insecure?: boolean;
   poolIdleTimeout?: number;
@@ -83,6 +97,7 @@ interface NativeRequestOptions {
   method: string;
   browser?: BrowserProfile;
   os?: EmulationOS;
+  emulationJson?: string;
   headers?: HeaderTuple[];
   body?: Buffer;
   proxy?: string;
@@ -228,8 +243,7 @@ const SUPPORTED_OSES: readonly EmulationOS[] = ["windows", "macos", "linux", "an
 const UTF8_DECODER = new TextDecoder("utf-8");
 
 type SessionDefaults = {
-  browser: BrowserProfile;
-  os: EmulationOS;
+  transportMode: ResolvedEmulationMode;
   proxy?: string;
   timeout?: number;
   insecure?: boolean;
@@ -247,11 +261,32 @@ type SessionResolution = {
 
 type TransportResolution = {
   transportId?: string;
-  browser?: BrowserProfile;
-  os?: EmulationOS;
+  mode?: ResolvedEmulationMode;
   proxy?: string;
   insecure?: boolean;
 };
+
+type SerializedCustomEmulation = {
+  tlsOptions?: CustomTlsOptions;
+  http1Options?: CustomHttp1Options;
+  http2Options?: CustomHttp2Options;
+  headers?: HeaderTuple[];
+  origHeaders?: string[];
+};
+
+type PresetEmulationMode = {
+  kind: "preset";
+  browser: BrowserProfile;
+  os: EmulationOS;
+  emulationJson?: string;
+};
+
+type CustomEmulationMode = {
+  kind: "custom";
+  emulationJson: string;
+};
+
+type ResolvedEmulationMode = PresetEmulationMode | CustomEmulationMode;
 
 type LegacyWebSocketCallbacks = {
   onMessage?: (data: string | Buffer) => void;
@@ -288,8 +323,7 @@ function generateSessionId(): string {
 function normalizeSessionOptions(options?: CreateSessionOptions): { sessionId: string; defaults: SessionDefaults } {
   const sessionId = options?.sessionId ?? generateSessionId();
   const defaults: SessionDefaults = {
-    browser: options?.browser ?? DEFAULT_BROWSER,
-    os: options?.os ?? DEFAULT_OS,
+    transportMode: resolveEmulationMode(options?.browser, options?.os, options?.emulation),
   };
 
   if (options?.proxy !== undefined) {
@@ -1200,24 +1234,37 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
     }
 
     const hasProxy = config.proxy !== undefined;
-    if (config.browser !== undefined || config.os !== undefined || hasProxy || config.insecure !== undefined) {
-      throw new RequestError("`transport` cannot be combined with browser/os/proxy/insecure options");
+    if (
+      config.browser !== undefined ||
+      config.os !== undefined ||
+      config.emulation !== undefined ||
+      hasProxy ||
+      config.insecure !== undefined
+    ) {
+      throw new RequestError("`transport` cannot be combined with browser/os/emulation/proxy/insecure options");
     }
 
     return { transportId: config.transport.id };
   }
 
   if (sessionDefaults?.transportId) {
+    if (config.emulation !== undefined) {
+      throw new RequestError("Session emulation cannot be changed after creation");
+    }
+
     if (config.browser !== undefined) {
       validateBrowserProfile(config.browser);
-      if (config.browser !== sessionDefaults.browser) {
+      const lockedBrowser =
+        sessionDefaults.transportMode.kind === "custom" ? undefined : sessionDefaults.transportMode.browser;
+      if (config.browser !== lockedBrowser) {
         throw new RequestError("Session browser cannot be changed after creation");
       }
     }
 
     if (config.os !== undefined) {
       validateOperatingSystem(config.os);
-      if (config.os !== sessionDefaults.os) {
+      const lockedOs = sessionDefaults.transportMode.kind === "custom" ? undefined : sessionDefaults.transportMode.os;
+      if (config.os !== lockedOs) {
         throw new RequestError("Session operating system cannot be changed after creation");
       }
     }
@@ -1238,13 +1285,9 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
     return { transportId: sessionDefaults.transportId };
   }
 
-  const browser = config.browser ?? DEFAULT_BROWSER;
-  const os = config.os ?? DEFAULT_OS;
-
-  validateBrowserProfile(browser);
-  validateOperatingSystem(os);
-
-  const resolved: TransportResolution = { browser, os };
+  const resolved: TransportResolution = {
+    mode: resolveEmulationMode(config.browser, config.os, config.emulation),
+  };
   if (config.proxy !== undefined) {
     resolved.proxy = config.proxy;
   }
@@ -1589,6 +1632,656 @@ function validatePositiveInteger(value: number, label: string): void {
   }
 }
 
+function validateIntegerInRange(value: number, min: number, max: number, label: string): void {
+  validateNonNegativeInteger(value, label);
+  if (value < min || value > max) {
+    throw new RequestError(`${label} must be between ${min} and ${max}`);
+  }
+}
+
+const SUPPORTED_ALPN_PROTOCOLS = new Set<AlpnProtocol>(["HTTP1", "HTTP2", "HTTP3"]);
+const SUPPORTED_ALPS_PROTOCOLS = new Set<AlpsProtocol>(["HTTP1", "HTTP2", "HTTP3"]);
+const SUPPORTED_CERTIFICATE_COMPRESSION_ALGORITHMS = new Set(["zlib", "brotli", "zstd"]);
+const HTTP2_SETTING_IDS = new Set<Http2SettingId>([
+  "HeaderTableSize",
+  "EnablePush",
+  "MaxConcurrentStreams",
+  "InitialWindowSize",
+  "MaxFrameSize",
+  "MaxHeaderListSize",
+  "EnableConnectProtocol",
+  "NoRfc7540Priorities",
+]);
+const HTTP2_PSEUDO_HEADER_IDS = new Set<Http2PseudoHeaderId>(["Method", "Scheme", "Authority", "Path", "Protocol"]);
+const STANDARD_HTTP2_SETTING_ID_VALUES = new Set([1, 2, 3, 4, 5, 6, 8, 9]);
+const MAX_HTTP2_EXPERIMENTAL_SETTING_ID = 15;
+const TLS_VERSION_ALIASES = new Map<string, "1.0" | "1.1" | "1.2" | "1.3">([
+  ["1.0", "1.0"],
+  ["1.1", "1.1"],
+  ["1.2", "1.2"],
+  ["1.3", "1.3"],
+  ["tls1.0", "1.0"],
+  ["tls1.1", "1.1"],
+  ["tls1.2", "1.2"],
+  ["tls1.3", "1.3"],
+]);
+
+function isNonEmpty(value: object): boolean {
+  for (const _ in value) return true;
+  return false;
+}
+
+function normalizeProtocolList<T extends AlpnProtocol | AlpsProtocol>(
+  value: T[] | undefined,
+  label: string,
+  allowed: Set<T>,
+): T[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (!Array.isArray(value)) {
+    throw new RequestError(`${label} must be an array`);
+  }
+
+  for (const protocol of value) {
+    if (!allowed.has(protocol)) {
+      throw new RequestError(`${label} values must be one of: HTTP1, HTTP2, HTTP3`);
+    }
+  }
+
+  return [...value];
+}
+
+function normalizeTlsVersion(value: TlsVersion | undefined, label: string): "1.0" | "1.1" | "1.2" | "1.3" | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "string") {
+    throw new RequestError(`${label} must be a string`);
+  }
+
+  const normalized = TLS_VERSION_ALIASES.get(value.trim().toLowerCase());
+  if (!normalized) {
+    throw new RequestError(`${label} must be one of: 1.0, 1.1, 1.2, 1.3`);
+  }
+
+  return normalized;
+}
+
+function normalizeOrigHeaders(origHeaders: string[] | undefined): string[] | undefined {
+  if (origHeaders === undefined) {
+    return undefined;
+  }
+
+  if (!Array.isArray(origHeaders)) {
+    throw new RequestError("emulation.origHeaders must be an array of strings");
+  }
+
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of origHeaders) {
+    if (typeof entry !== "string" || entry.trim().length === 0) {
+      throw new RequestError("emulation.origHeaders entries must be non-empty strings");
+    }
+
+    const trimmed = entry.trim();
+    const duplicateKey = trimmed.toLowerCase();
+    if (seen.has(duplicateKey)) {
+      throw new RequestError(`Duplicate emulation.origHeaders entry: ${trimmed}`);
+    }
+
+    seen.add(duplicateKey);
+    normalized.push(trimmed);
+  }
+
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeCustomTlsOptions(options: CustomTlsOptions | undefined): CustomTlsOptions | undefined {
+  if (options === undefined) {
+    return undefined;
+  }
+
+  const normalized: CustomTlsOptions = {};
+
+  const alpnProtocols = normalizeProtocolList(
+    options.alpnProtocols,
+    "emulation.tlsOptions.alpnProtocols",
+    SUPPORTED_ALPN_PROTOCOLS,
+  );
+  if (alpnProtocols !== undefined) {
+    normalized.alpnProtocols = alpnProtocols;
+  }
+
+  const alpsProtocols = normalizeProtocolList(
+    options.alpsProtocols,
+    "emulation.tlsOptions.alpsProtocols",
+    SUPPORTED_ALPS_PROTOCOLS,
+  );
+  if (alpsProtocols !== undefined) {
+    normalized.alpsProtocols = alpsProtocols;
+  }
+
+  const minTlsVersion = normalizeTlsVersion(options.minTlsVersion, "emulation.tlsOptions.minTlsVersion");
+  if (minTlsVersion !== undefined) {
+    normalized.minTlsVersion = minTlsVersion;
+  }
+
+  const maxTlsVersion = normalizeTlsVersion(options.maxTlsVersion, "emulation.tlsOptions.maxTlsVersion");
+  if (maxTlsVersion !== undefined) {
+    normalized.maxTlsVersion = maxTlsVersion;
+  }
+
+  if (options.alpsUseNewCodepoint !== undefined) {
+    normalized.alpsUseNewCodepoint = options.alpsUseNewCodepoint;
+  }
+  if (options.sessionTicket !== undefined) {
+    normalized.sessionTicket = options.sessionTicket;
+  }
+  if (options.preSharedKey !== undefined) {
+    normalized.preSharedKey = options.preSharedKey;
+  }
+  if (options.enableEchGrease !== undefined) {
+    normalized.enableEchGrease = options.enableEchGrease;
+  }
+  if (options.permuteExtensions !== undefined) {
+    normalized.permuteExtensions = options.permuteExtensions;
+  }
+  if (options.greaseEnabled !== undefined) {
+    normalized.greaseEnabled = options.greaseEnabled;
+  }
+  if (options.enableOcspStapling !== undefined) {
+    normalized.enableOcspStapling = options.enableOcspStapling;
+  }
+  if (options.enableSignedCertTimestamps !== undefined) {
+    normalized.enableSignedCertTimestamps = options.enableSignedCertTimestamps;
+  }
+  if (options.pskSkipSessionTicket !== undefined) {
+    normalized.pskSkipSessionTicket = options.pskSkipSessionTicket;
+  }
+  if (options.pskDheKe !== undefined) {
+    normalized.pskDheKe = options.pskDheKe;
+  }
+  if (options.renegotiation !== undefined) {
+    normalized.renegotiation = options.renegotiation;
+  }
+  if (options.aesHwOverride !== undefined) {
+    normalized.aesHwOverride = options.aesHwOverride;
+  }
+  if (options.preserveTls13CipherList !== undefined) {
+    normalized.preserveTls13CipherList = options.preserveTls13CipherList;
+  }
+  if (options.randomAesHwOverride !== undefined) {
+    normalized.randomAesHwOverride = options.randomAesHwOverride;
+  }
+  if (options.delegatedCredentials !== undefined) {
+    normalized.delegatedCredentials = options.delegatedCredentials;
+  }
+  if (options.curvesList !== undefined) {
+    normalized.curvesList = options.curvesList;
+  }
+  if (options.cipherList !== undefined) {
+    normalized.cipherList = options.cipherList;
+  }
+  if (options.sigalgsList !== undefined) {
+    normalized.sigalgsList = options.sigalgsList;
+  }
+
+  if (options.recordSizeLimit !== undefined) {
+    validateIntegerInRange(options.recordSizeLimit, 0, 65535, "emulation.tlsOptions.recordSizeLimit");
+    normalized.recordSizeLimit = options.recordSizeLimit;
+  }
+
+  if (options.keySharesLimit !== undefined) {
+    validateIntegerInRange(options.keySharesLimit, 0, 255, "emulation.tlsOptions.keySharesLimit");
+    normalized.keySharesLimit = options.keySharesLimit;
+  }
+
+  if (options.certificateCompressionAlgorithms !== undefined) {
+    if (!Array.isArray(options.certificateCompressionAlgorithms)) {
+      throw new RequestError("emulation.tlsOptions.certificateCompressionAlgorithms must be an array");
+    }
+
+    const algorithms: Array<"zlib" | "brotli" | "zstd"> = [];
+    const seen = new Set<string>();
+
+    for (const algorithm of options.certificateCompressionAlgorithms) {
+      if (!SUPPORTED_CERTIFICATE_COMPRESSION_ALGORITHMS.has(algorithm)) {
+        throw new RequestError(
+          "emulation.tlsOptions.certificateCompressionAlgorithms values must be one of: zlib, brotli, zstd",
+        );
+      }
+      if (seen.has(algorithm)) {
+        throw new RequestError(`Duplicate emulation.tlsOptions.certificateCompressionAlgorithms entry: ${algorithm}`);
+      }
+      seen.add(algorithm);
+      algorithms.push(algorithm);
+    }
+
+    normalized.certificateCompressionAlgorithms = algorithms;
+  }
+
+  if (options.extensionPermutation !== undefined) {
+    if (!Array.isArray(options.extensionPermutation)) {
+      throw new RequestError("emulation.tlsOptions.extensionPermutation must be an array");
+    }
+
+    const permutation: number[] = [];
+    const seen = new Set<number>();
+
+    for (const extensionId of options.extensionPermutation) {
+      validateIntegerInRange(extensionId, 0, 65535, "emulation.tlsOptions.extensionPermutation");
+      if (seen.has(extensionId)) {
+        throw new RequestError(`Duplicate emulation.tlsOptions.extensionPermutation entry: ${extensionId}`);
+      }
+      seen.add(extensionId);
+      permutation.push(extensionId);
+    }
+
+    normalized.extensionPermutation = permutation;
+  }
+
+  return isNonEmpty(normalized) ? normalized : undefined;
+}
+
+function normalizeCustomHttp1Options(options: CustomHttp1Options | undefined): CustomHttp1Options | undefined {
+  if (options === undefined) {
+    return undefined;
+  }
+
+  const normalized: CustomHttp1Options = {};
+
+  if (options.http09Responses !== undefined) {
+    normalized.http09Responses = options.http09Responses;
+  }
+  if (options.writev !== undefined) {
+    normalized.writev = options.writev;
+  }
+  if (options.ignoreInvalidHeadersInResponses !== undefined) {
+    normalized.ignoreInvalidHeadersInResponses = options.ignoreInvalidHeadersInResponses;
+  }
+  if (options.allowSpacesAfterHeaderNameInResponses !== undefined) {
+    normalized.allowSpacesAfterHeaderNameInResponses = options.allowSpacesAfterHeaderNameInResponses;
+  }
+  if (options.allowObsoleteMultilineHeadersInResponses !== undefined) {
+    normalized.allowObsoleteMultilineHeadersInResponses = options.allowObsoleteMultilineHeadersInResponses;
+  }
+
+  if (options.maxHeaders !== undefined) {
+    validateNonNegativeInteger(options.maxHeaders, "emulation.http1Options.maxHeaders");
+    normalized.maxHeaders = options.maxHeaders;
+  }
+
+  if (options.readBufExactSize !== undefined) {
+    validateNonNegativeInteger(options.readBufExactSize, "emulation.http1Options.readBufExactSize");
+    normalized.readBufExactSize = options.readBufExactSize;
+  }
+
+  if (options.maxBufSize !== undefined) {
+    validateNonNegativeInteger(options.maxBufSize, "emulation.http1Options.maxBufSize");
+    if (options.maxBufSize < 8192) {
+      throw new RequestError("emulation.http1Options.maxBufSize must be greater than or equal to 8192");
+    }
+    normalized.maxBufSize = options.maxBufSize;
+  }
+
+  if (normalized.readBufExactSize !== undefined && normalized.maxBufSize !== undefined) {
+    throw new RequestError("emulation.http1Options.readBufExactSize and maxBufSize cannot both be set");
+  }
+
+  return isNonEmpty(normalized) ? normalized : undefined;
+}
+
+function normalizeHttp2StreamDependency(dependency: Http2StreamDependency, label: string): Http2StreamDependency {
+  if (!isPlainObject(dependency)) {
+    throw new RequestError(`${label} must be an object`);
+  }
+
+  validateIntegerInRange(dependency.dependencyId, 0, 0x7fffffff, `${label}.dependencyId`);
+  validateIntegerInRange(dependency.weight, 0, 255, `${label}.weight`);
+
+  const normalized: Http2StreamDependency = {
+    dependencyId: dependency.dependencyId,
+    weight: dependency.weight,
+  };
+  if (dependency.exclusive !== undefined) {
+    normalized.exclusive = dependency.exclusive;
+  }
+  return normalized;
+}
+
+function normalizeCustomHttp2Options(options: CustomHttp2Options | undefined): CustomHttp2Options | undefined {
+  if (options === undefined) {
+    return undefined;
+  }
+
+  const normalized: CustomHttp2Options = {};
+
+  if (options.adaptiveWindow !== undefined) {
+    normalized.adaptiveWindow = options.adaptiveWindow;
+  }
+  if (options.keepAliveWhileIdle !== undefined) {
+    normalized.keepAliveWhileIdle = options.keepAliveWhileIdle;
+  }
+  if (options.enablePush !== undefined) {
+    normalized.enablePush = options.enablePush;
+  }
+  if (options.enableConnectProtocol !== undefined) {
+    normalized.enableConnectProtocol = options.enableConnectProtocol;
+  }
+  if (options.noRfc7540Priorities !== undefined) {
+    normalized.noRfc7540Priorities = options.noRfc7540Priorities;
+  }
+
+  if (options.initialStreamId !== undefined) {
+    validateNonNegativeInteger(options.initialStreamId, "emulation.http2Options.initialStreamId");
+    normalized.initialStreamId = options.initialStreamId;
+  }
+  if (options.initialConnectionWindowSize !== undefined) {
+    validateNonNegativeInteger(
+      options.initialConnectionWindowSize,
+      "emulation.http2Options.initialConnectionWindowSize",
+    );
+    normalized.initialConnectionWindowSize = options.initialConnectionWindowSize;
+  }
+  if (options.initialWindowSize !== undefined) {
+    validateNonNegativeInteger(options.initialWindowSize, "emulation.http2Options.initialWindowSize");
+    normalized.initialWindowSize = options.initialWindowSize;
+  }
+  if (options.initialMaxSendStreams !== undefined) {
+    validateNonNegativeInteger(options.initialMaxSendStreams, "emulation.http2Options.initialMaxSendStreams");
+    normalized.initialMaxSendStreams = options.initialMaxSendStreams;
+  }
+  if (options.maxFrameSize !== undefined) {
+    validateNonNegativeInteger(options.maxFrameSize, "emulation.http2Options.maxFrameSize");
+    normalized.maxFrameSize = options.maxFrameSize;
+  }
+  if (options.keepAliveInterval !== undefined) {
+    validateNonNegativeInteger(options.keepAliveInterval, "emulation.http2Options.keepAliveInterval");
+    normalized.keepAliveInterval = options.keepAliveInterval;
+  }
+  if (options.keepAliveTimeout !== undefined) {
+    validateNonNegativeInteger(options.keepAliveTimeout, "emulation.http2Options.keepAliveTimeout");
+    normalized.keepAliveTimeout = options.keepAliveTimeout;
+  }
+  if (options.maxConcurrentResetStreams !== undefined) {
+    validateNonNegativeInteger(options.maxConcurrentResetStreams, "emulation.http2Options.maxConcurrentResetStreams");
+    normalized.maxConcurrentResetStreams = options.maxConcurrentResetStreams;
+  }
+  if (options.maxSendBufferSize !== undefined) {
+    validateNonNegativeInteger(options.maxSendBufferSize, "emulation.http2Options.maxSendBufferSize");
+    normalized.maxSendBufferSize = options.maxSendBufferSize;
+  }
+  if (options.maxConcurrentStreams !== undefined) {
+    validateNonNegativeInteger(options.maxConcurrentStreams, "emulation.http2Options.maxConcurrentStreams");
+    normalized.maxConcurrentStreams = options.maxConcurrentStreams;
+  }
+  if (options.maxHeaderListSize !== undefined) {
+    validateNonNegativeInteger(options.maxHeaderListSize, "emulation.http2Options.maxHeaderListSize");
+    normalized.maxHeaderListSize = options.maxHeaderListSize;
+  }
+  if (options.maxPendingAcceptResetStreams !== undefined) {
+    validateNonNegativeInteger(
+      options.maxPendingAcceptResetStreams,
+      "emulation.http2Options.maxPendingAcceptResetStreams",
+    );
+    normalized.maxPendingAcceptResetStreams = options.maxPendingAcceptResetStreams;
+  }
+  if (options.headerTableSize !== undefined) {
+    validateNonNegativeInteger(options.headerTableSize, "emulation.http2Options.headerTableSize");
+    normalized.headerTableSize = options.headerTableSize;
+  }
+
+  if (options.settingsOrder !== undefined) {
+    if (!Array.isArray(options.settingsOrder)) {
+      throw new RequestError("emulation.http2Options.settingsOrder must be an array");
+    }
+
+    const settingsOrder: Http2SettingId[] = [];
+    const seen = new Set<Http2SettingId>();
+    for (const settingId of options.settingsOrder) {
+      if (!HTTP2_SETTING_IDS.has(settingId)) {
+        throw new RequestError("emulation.http2Options.settingsOrder contains an unsupported setting id");
+      }
+      if (seen.has(settingId)) {
+        throw new RequestError(`Duplicate emulation.http2Options.settingsOrder entry: ${settingId}`);
+      }
+      seen.add(settingId);
+      settingsOrder.push(settingId);
+    }
+    normalized.settingsOrder = settingsOrder;
+  }
+
+  if (options.headersPseudoOrder !== undefined) {
+    if (!Array.isArray(options.headersPseudoOrder)) {
+      throw new RequestError("emulation.http2Options.headersPseudoOrder must be an array");
+    }
+
+    const headersPseudoOrder: Http2PseudoHeaderId[] = [];
+    const seenPseudo = new Set<Http2PseudoHeaderId>();
+    for (const pseudoId of options.headersPseudoOrder) {
+      if (!HTTP2_PSEUDO_HEADER_IDS.has(pseudoId)) {
+        throw new RequestError("emulation.http2Options.headersPseudoOrder contains an unsupported pseudo-header id");
+      }
+      if (seenPseudo.has(pseudoId)) {
+        throw new RequestError(`Duplicate emulation.http2Options.headersPseudoOrder entry: ${pseudoId}`);
+      }
+      seenPseudo.add(pseudoId);
+      headersPseudoOrder.push(pseudoId);
+    }
+    normalized.headersPseudoOrder = headersPseudoOrder;
+  }
+
+  if (options.headersStreamDependency !== undefined) {
+    normalized.headersStreamDependency = normalizeHttp2StreamDependency(
+      options.headersStreamDependency,
+      "emulation.http2Options.headersStreamDependency",
+    );
+  }
+
+  if (options.priorities !== undefined) {
+    if (!Array.isArray(options.priorities)) {
+      throw new RequestError("emulation.http2Options.priorities must be an array");
+    }
+
+    const priorities: Http2Priority[] = [];
+    const seenStreamIds = new Set<number>();
+    for (const [index, priority] of options.priorities.entries()) {
+      if (!isPlainObject(priority)) {
+        throw new RequestError(`emulation.http2Options.priorities[${index}] must be an object`);
+      }
+
+      validatePositiveInteger(priority.streamId, `emulation.http2Options.priorities[${index}].streamId`);
+      if (seenStreamIds.has(priority.streamId)) {
+        throw new RequestError(`Duplicate emulation.http2Options.priorities streamId: ${priority.streamId}`);
+      }
+      seenStreamIds.add(priority.streamId);
+
+      priorities.push({
+        streamId: priority.streamId,
+        dependency: normalizeHttp2StreamDependency(
+          priority.dependency,
+          `emulation.http2Options.priorities[${index}].dependency`,
+        ),
+      });
+    }
+    normalized.priorities = priorities;
+  }
+
+  if (options.experimentalSettings !== undefined) {
+    if (!Array.isArray(options.experimentalSettings)) {
+      throw new RequestError("emulation.http2Options.experimentalSettings must be an array");
+    }
+
+    const experimentalSettings: Http2ExperimentalSetting[] = [];
+    const seenIds = new Set<number>();
+
+    for (const [index, setting] of options.experimentalSettings.entries()) {
+      if (!isPlainObject(setting)) {
+        throw new RequestError(`emulation.http2Options.experimentalSettings[${index}] must be an object`);
+      }
+
+      validateIntegerInRange(
+        setting.id,
+        1,
+        MAX_HTTP2_EXPERIMENTAL_SETTING_ID,
+        `emulation.http2Options.experimentalSettings[${index}].id`,
+      );
+      if (STANDARD_HTTP2_SETTING_ID_VALUES.has(setting.id)) {
+        throw new RequestError(
+          `emulation.http2Options.experimentalSettings[${index}].id must not be a standard HTTP/2 setting id`,
+        );
+      }
+      if (seenIds.has(setting.id)) {
+        throw new RequestError(`Duplicate emulation.http2Options.experimentalSettings id: ${setting.id}`);
+      }
+      seenIds.add(setting.id);
+
+      validateIntegerInRange(
+        setting.value,
+        0,
+        0xffffffff,
+        `emulation.http2Options.experimentalSettings[${index}].value`,
+      );
+
+      experimentalSettings.push({
+        id: setting.id,
+        value: setting.value,
+      });
+    }
+
+    normalized.experimentalSettings = experimentalSettings;
+  }
+
+  return isNonEmpty(normalized) ? normalized : undefined;
+}
+
+function normalizeCustomEmulationOptions(
+  emulation: CustomEmulationOptions | undefined,
+  allowEmpty: boolean,
+): SerializedCustomEmulation | undefined {
+  if (emulation === undefined) {
+    return undefined;
+  }
+
+  if (!isPlainObject(emulation)) {
+    throw new RequestError("emulation must be an object");
+  }
+
+  const source = emulation as Partial<CustomEmulationOptions>;
+  const normalized: SerializedCustomEmulation = {};
+
+  const tlsOptions = normalizeCustomTlsOptions(source.tlsOptions);
+  if (tlsOptions !== undefined) {
+    normalized.tlsOptions = tlsOptions;
+  }
+
+  const http1Options = normalizeCustomHttp1Options(source.http1Options);
+  if (http1Options !== undefined) {
+    normalized.http1Options = http1Options;
+  }
+
+  const http2Options = normalizeCustomHttp2Options(source.http2Options);
+  if (http2Options !== undefined) {
+    normalized.http2Options = http2Options;
+  }
+
+  if (source.headers !== undefined) {
+    const headers = headersToTuples(source.headers);
+    if (headers.length > 0) {
+      normalized.headers = headers;
+    }
+  }
+
+  const origHeaders = normalizeOrigHeaders(source.origHeaders);
+  if (origHeaders !== undefined) {
+    normalized.origHeaders = origHeaders;
+  }
+
+  if (!allowEmpty && !isNonEmpty(normalized)) {
+    throw new RequestError(
+      "Standalone custom emulation requires at least one of tlsOptions, http1Options, http2Options, headers, or origHeaders",
+    );
+  }
+
+  return isNonEmpty(normalized) ? normalized : undefined;
+}
+
+function serializeCustomEmulationOptions(
+  emulation: CustomEmulationOptions | undefined,
+  allowEmpty: boolean,
+): string | undefined {
+  const normalized = normalizeCustomEmulationOptions(emulation, allowEmpty);
+  return normalized ? JSON.stringify(normalized) : undefined;
+}
+
+function resolveEmulationMode(
+  browser: BrowserProfile | undefined,
+  os: EmulationOS | undefined,
+  emulation: CustomEmulationOptions | undefined,
+): ResolvedEmulationMode {
+  if (browser !== undefined) {
+    validateBrowserProfile(browser);
+    if (os !== undefined) {
+      validateOperatingSystem(os);
+    }
+
+    const emulationJson = serializeCustomEmulationOptions(emulation, true);
+    return {
+      kind: "preset",
+      browser,
+      os: os ?? DEFAULT_OS,
+      ...(emulationJson !== undefined && { emulationJson }),
+    };
+  }
+
+  if (os !== undefined) {
+    validateOperatingSystem(os);
+    const emulationJson = serializeCustomEmulationOptions(emulation, true);
+    return {
+      kind: "preset",
+      browser: DEFAULT_BROWSER,
+      os,
+      ...(emulationJson !== undefined && { emulationJson }),
+    };
+  }
+
+  if (emulation !== undefined) {
+    const emulationJson = serializeCustomEmulationOptions(emulation, false);
+    if (emulationJson === undefined) {
+      throw new RequestError(
+        "Standalone custom emulation requires at least one of tlsOptions, http1Options, http2Options, headers, or origHeaders",
+      );
+    }
+    return { kind: "custom", emulationJson };
+  }
+
+  return {
+    kind: "preset",
+    browser: DEFAULT_BROWSER,
+    os: DEFAULT_OS,
+  };
+}
+
+function applyNativeEmulationMode(
+  target: { browser?: BrowserProfile; os?: EmulationOS; emulationJson?: string },
+  mode: ResolvedEmulationMode,
+): void {
+  if (mode.kind === "custom") {
+    target.emulationJson = mode.emulationJson;
+    return;
+  }
+
+  target.browser = mode.browser;
+  target.os = mode.os;
+  if (mode.emulationJson !== undefined) {
+    target.emulationJson = mode.emulationJson;
+  }
+}
+
 async function dispatchRequest(
   options: NativeRequestOptions,
   requestUrl: string,
@@ -1724,8 +2417,9 @@ export async function fetch(input: string | URL | Request, init?: WreqRequestIni
   if (transport.transportId) {
     requestOptions.transportId = transport.transportId;
   } else {
-    requestOptions.browser = transport.browser ?? DEFAULT_BROWSER;
-    requestOptions.os = transport.os ?? DEFAULT_OS;
+    if (transport.mode !== undefined) {
+      applyNativeEmulationMode(requestOptions, transport.mode);
+    }
     if (transport.proxy !== undefined) {
       requestOptions.proxy = transport.proxy;
     }
@@ -1753,11 +2447,7 @@ export async function fetch(input: string | URL | Request, init?: WreqRequestIni
 }
 
 export async function createTransport(options?: CreateTransportOptions): Promise<Transport> {
-  const browser = options?.browser ?? DEFAULT_BROWSER;
-  const os = options?.os ?? DEFAULT_OS;
-
-  validateBrowserProfile(browser);
-  validateOperatingSystem(os);
+  const mode = resolveEmulationMode(options?.browser, options?.os, options?.emulation);
 
   if (options?.poolIdleTimeout !== undefined) {
     validatePositiveNumber(options.poolIdleTimeout, "poolIdleTimeout");
@@ -1776,9 +2466,7 @@ export async function createTransport(options?: CreateTransportOptions): Promise
   }
 
   try {
-    const id = nativeBinding.createTransport({
-      browser,
-      os,
+    const transportOptions: NativeTransportOptions = {
       ...(options?.proxy !== undefined && { proxy: options.proxy }),
       ...(options?.insecure !== undefined && { insecure: options.insecure }),
       ...(options?.poolIdleTimeout !== undefined && { poolIdleTimeout: options.poolIdleTimeout }),
@@ -1786,7 +2474,10 @@ export async function createTransport(options?: CreateTransportOptions): Promise
       ...(options?.poolMaxSize !== undefined && { poolMaxSize: options.poolMaxSize }),
       ...(options?.connectTimeout !== undefined && { connectTimeout: options.connectTimeout }),
       ...(options?.readTimeout !== undefined && { readTimeout: options.readTimeout }),
-    });
+    };
+    applyNativeEmulationMode(transportOptions, mode);
+
+    const id = nativeBinding.createTransport(transportOptions);
 
     return new Transport(id);
   } catch (error) {
@@ -1797,19 +2488,16 @@ export async function createTransport(options?: CreateTransportOptions): Promise
 export async function createSession(options?: CreateSessionOptions): Promise<Session> {
   const { sessionId, defaults } = normalizeSessionOptions(options);
 
-  validateBrowserProfile(defaults.browser);
-  validateOperatingSystem(defaults.os);
-
   let createdId: string;
   let transportId: string;
 
   try {
-    transportId = nativeBinding.createTransport({
-      browser: defaults.browser,
-      os: defaults.os,
+    const transportOptions: NativeTransportOptions = {
       ...(defaults.proxy !== undefined && { proxy: defaults.proxy }),
       ...(defaults.insecure !== undefined && { insecure: defaults.insecure }),
-    });
+    };
+    applyNativeEmulationMode(transportOptions, defaults.transportMode);
+    transportId = nativeBinding.createTransport(transportOptions);
   } catch (error) {
     throw new RequestError(String(error));
   }
@@ -1876,6 +2564,10 @@ export async function request(options: RequestOptions): Promise<Response> {
 
   if (rest.os !== undefined) {
     init.os = rest.os;
+  }
+
+  if (rest.emulation !== undefined) {
+    init.emulation = rest.emulation;
   }
 
   if (rest.proxy !== undefined) {
@@ -2071,6 +2763,9 @@ function normalizeStandaloneWebSocketOptions(options?: Partial<WebSocketOptions>
   if (options.os !== undefined) {
     normalized.os = options.os;
   }
+  if (options.emulation !== undefined) {
+    normalized.emulation = options.emulation;
+  }
   if (options.headers !== undefined) {
     normalized.headers = options.headers;
   }
@@ -2104,6 +2799,11 @@ function normalizeSessionWebSocketOptions(options?: Partial<SessionWebSocketOpti
   }
   if (optionsWithOverrides.os !== undefined) {
     throw new RequestError("`os` is not supported in session.websocket(); the session controls OS emulation.");
+  }
+  if (optionsWithOverrides.emulation !== undefined) {
+    throw new RequestError(
+      "`emulation` is not supported in session.websocket(); the session transport controls emulation.",
+    );
   }
   if (optionsWithOverrides.proxy !== undefined) {
     throw new RequestError("`proxy` is not supported in session.websocket(); the session transport controls proxying.");
@@ -2336,10 +3036,11 @@ export class WebSocket {
         : normalizedOptions.protocols,
     );
     assertNoManualWebSocketProtocolHeader(normalizedOptions.headers);
-    validateBrowserProfile(normalizedOptions.browser);
-    const os = normalizedOptions.os ?? DEFAULT_OS;
-    validateOperatingSystem(os);
-    const browser = normalizedOptions.browser ?? DEFAULT_BROWSER;
+    const emulationMode = resolveEmulationMode(
+      normalizedOptions.browser,
+      normalizedOptions.os,
+      normalizedOptions.emulation,
+    );
     const protocols = normalizeWebSocketProtocolList(
       typeof protocolsOrOptions === "string" || Array.isArray(protocolsOrOptions)
         ? protocolsOrOptions
@@ -2351,18 +3052,19 @@ export class WebSocket {
       url: normalizeWebSocketUrl(url),
       options: normalizedOptions,
       openDispatchMode: "automatic",
-      connect: (callbacks) =>
-        nativeBinding.websocketConnect({
+      connect: (callbacks) => {
+        const nativeOptions: NativeWebSocketOptions = {
           url: normalizeWebSocketUrl(url),
-          browser,
-          os,
           headers: headersToTuples(normalizedOptions.headers ?? {}),
           ...(protocols && protocols.length > 0 && { protocols }),
           ...(normalizedOptions.proxy !== undefined && { proxy: normalizedOptions.proxy }),
           onMessage: callbacks.onMessage,
           onClose: callbacks.onClose,
           onError: callbacks.onError,
-        }),
+        };
+        applyNativeEmulationMode(nativeOptions, emulationMode);
+        return nativeBinding.websocketConnect(nativeOptions);
+      },
       legacyCallbacks: extractLegacyWebSocketCallbacks(optionsCandidate),
     };
   }
@@ -2873,10 +3575,11 @@ export async function websocket(
   const normalized = normalizeStandaloneWebSocketArgs(urlOrOptions, options);
   validateWebSocketProtocols(normalized.options.protocols);
   assertNoManualWebSocketProtocolHeader(normalized.options.headers);
-  validateBrowserProfile(normalized.options.browser);
-  const os = normalized.options.os ?? DEFAULT_OS;
-  validateOperatingSystem(os);
-  const browser = normalized.options.browser ?? DEFAULT_BROWSER;
+  const emulationMode = resolveEmulationMode(
+    normalized.options.browser,
+    normalized.options.os,
+    normalized.options.emulation,
+  );
   const protocols = normalizeWebSocketProtocolList(normalized.options.protocols);
 
   return WebSocket._connectWithInit({
@@ -2884,34 +3587,47 @@ export async function websocket(
     url: normalized.url,
     options: normalized.options,
     openDispatchMode: "deferred",
-    connect: (callbacks) =>
-      nativeBinding.websocketConnect({
+    connect: (callbacks) => {
+      const nativeOptions: NativeWebSocketOptions = {
         url: normalized.url,
-        browser,
-        os,
         headers: headersToTuples(normalized.options.headers ?? {}),
         ...(protocols && protocols.length > 0 && { protocols }),
         ...(normalized.options.proxy !== undefined && { proxy: normalized.options.proxy }),
         onMessage: callbacks.onMessage,
         onClose: callbacks.onClose,
         onError: callbacks.onError,
-      }),
+      };
+      applyNativeEmulationMode(nativeOptions, emulationMode);
+      return nativeBinding.websocketConnect(nativeOptions);
+    },
     legacyCallbacks: normalized.legacyCallbacks,
   });
 }
 
 export type {
+  AlpnProtocol,
+  AlpsProtocol,
   BodyInit,
   BrowserProfile,
   CookieMode,
   CreateSessionOptions,
   CreateTransportOptions,
+  CustomEmulationOptions,
+  CustomHttp1Options,
+  CustomHttp2Options,
+  CustomTlsOptions,
   EmulationOS,
   HeadersInit,
+  Http2ExperimentalSetting,
+  Http2Priority,
+  Http2PseudoHeaderId,
+  Http2SettingId,
+  Http2StreamDependency,
   RequestInit,
   RequestOptions,
   SessionHandle,
   SessionWebSocketOptions,
+  TlsVersion,
   WebSocketBinaryType,
   WebSocketCloseEvent,
   WebSocketErrorEvent,

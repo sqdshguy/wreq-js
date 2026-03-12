@@ -1,4 +1,5 @@
 mod client;
+mod custom_emulation;
 mod generated_profiles;
 mod websocket;
 
@@ -162,21 +163,22 @@ fn js_object_to_request_options(
     let url: Handle<JsString> = obj.get(cx, "url")?;
     let url = url.value(cx);
 
-    // Get browser (optional, defaults to chrome_142)
+    // Get browser/os/emulation mode as resolved by JS.
     let browser_str = obj
         .get_opt(cx, "browser")?
         .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(cx).ok())
-        .map(|v| v.value(cx))
-        .unwrap_or_else(|| "chrome_142".to_string());
+        .map(|v| v.value(cx));
 
-    let emulation = parse_emulation(&browser_str);
+    let browser = browser_str.as_deref().map(parse_emulation);
     let os_str = obj
         .get_opt(cx, "os")?
         .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(cx).ok())
-        .map(|v| v.value(cx))
-        .unwrap_or_else(|| "macos".to_string());
-
-    let emulation_os = parse_emulation_os(&os_str);
+        .map(|v| v.value(cx));
+    let browser_os = os_str.as_deref().map(parse_emulation_os);
+    let emulation_json = obj
+        .get_opt(cx, "emulationJson")?
+        .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(cx).ok())
+        .map(|v| Arc::<str>::from(v.value(cx)));
 
     // Get method (optional, defaults to GET)
     let method = obj
@@ -299,8 +301,9 @@ fn js_object_to_request_options(
 
     Ok(RequestOptions {
         url,
-        emulation,
-        emulation_os,
+        browser,
+        browser_os,
+        emulation_json,
         headers,
         method,
         body,
@@ -516,6 +519,7 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
     let (
         browser_opt,
         os_opt,
+        emulation_json_opt,
         proxy_opt,
         insecure_opt,
         pool_idle_timeout_opt,
@@ -525,7 +529,7 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
         read_timeout_opt,
     ) = if let Some(value) = options_value {
         if value.is_a::<JsUndefined, _>(&mut cx) || value.is_a::<JsNull, _>(&mut cx) {
-            (None, None, None, None, None, None, None, None, None)
+            (None, None, None, None, None, None, None, None, None, None)
         } else {
             let obj = value.downcast_or_throw::<JsObject, _>(&mut cx)?;
             let browser = obj
@@ -536,6 +540,10 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
                 .get_opt(&mut cx, "os")?
                 .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
                 .map(|v| v.value(&mut cx));
+            let emulation_json = obj
+                .get_opt(&mut cx, "emulationJson")?
+                .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
+                .map(|v| Arc::<str>::from(v.value(&mut cx)));
             let proxy = obj
                 .get_opt(&mut cx, "proxy")?
                 .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
@@ -568,6 +576,7 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
             (
                 browser,
                 os,
+                emulation_json,
                 proxy,
                 insecure,
                 pool_idle_timeout,
@@ -578,18 +587,17 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
             )
         }
     } else {
-        (None, None, None, None, None, None, None, None, None)
+        (None, None, None, None, None, None, None, None, None, None)
     };
 
-    let browser_str = browser_opt.unwrap_or_else(|| "chrome_142".to_string());
-    let os_str = os_opt.unwrap_or_else(|| "macos".to_string());
-    let emulation = parse_emulation(&browser_str);
-    let emulation_os = parse_emulation_os(&os_str);
+    let browser = browser_opt.as_deref().map(parse_emulation);
+    let browser_os = os_opt.as_deref().map(parse_emulation_os);
     let insecure = insecure_opt.unwrap_or(false);
 
     match create_managed_transport(
-        emulation,
-        emulation_os,
+        browser,
+        browser_os,
+        emulation_json_opt,
         proxy_opt,
         insecure,
         pool_idle_timeout_opt,
@@ -939,16 +947,17 @@ fn websocket_connect(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let browser_str = options_obj
         .get_opt(&mut cx, "browser")?
         .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
-        .map(|v| v.value(&mut cx))
-        .unwrap_or_else(|| "chrome_142".to_string());
-
-    let emulation = parse_emulation(&browser_str);
+        .map(|v| v.value(&mut cx));
+    let browser = browser_str.as_deref().map(parse_emulation);
     let os_str = options_obj
         .get_opt(&mut cx, "os")?
         .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
-        .map(|v| v.value(&mut cx))
-        .unwrap_or_else(|| "macos".to_string());
-    let emulation_os = parse_emulation_os(&os_str);
+        .map(|v| v.value(&mut cx));
+    let browser_os = os_str.as_deref().map(parse_emulation_os);
+    let emulation_json = options_obj
+        .get_opt(&mut cx, "emulationJson")?
+        .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
+        .map(|v| Arc::<str>::from(v.value(&mut cx)));
 
     let headers = extract_ws_headers(&mut cx, &options_obj)?;
     let protocols = extract_ws_protocols(&mut cx, &options_obj)?;
@@ -962,8 +971,9 @@ fn websocket_connect(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     let options = WebSocketOptions {
         url,
-        emulation,
-        emulation_os,
+        browser,
+        browser_os,
+        emulation_json,
         headers,
         protocols,
         proxy,
@@ -1036,9 +1046,14 @@ fn websocket_connect_session(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     HTTP_RUNTIME.spawn(async move {
         let result: Result<(u64, WebSocketUpgradeMetadata), anyhow::Error> = async {
-            let (connection, receiver, metadata) =
-                connect_websocket_with_session(&session_id, &transport_id, &url, &headers, &protocols)
-                    .await?;
+            let (connection, receiver, metadata) = connect_websocket_with_session(
+                &session_id,
+                &transport_id,
+                &url,
+                &headers,
+                &protocols,
+            )
+            .await?;
             let id = setup_ws_callbacks(
                 connection,
                 receiver,

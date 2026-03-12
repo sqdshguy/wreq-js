@@ -15,7 +15,9 @@ use uuid::Uuid;
 use wreq::cookie::Jar;
 use wreq::header::OrigHeaderMap;
 use wreq::{Client as HttpClient, Method, Proxy, redirect};
-use wreq_util::{Emulation, EmulationOS, EmulationOption};
+
+use crate::custom_emulation::resolve_emulation;
+use wreq_util::{Emulation as BrowserEmulation, EmulationOS as BrowserEmulationOS};
 
 pub static HTTP_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
@@ -58,8 +60,9 @@ impl RedirectMode {
 #[derive(Debug, Clone)]
 pub struct RequestOptions {
     pub url: String,
-    pub emulation: Emulation,
-    pub emulation_os: EmulationOS,
+    pub browser: Option<BrowserEmulation>,
+    pub browser_os: Option<BrowserEmulationOS>,
+    pub emulation_json: Option<Arc<str>>,
     pub headers: Vec<(String, String)>,
     pub method: String,
     pub body: Option<Vec<u8>>,
@@ -92,8 +95,9 @@ pub struct Response {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct SessionConfig {
-    emulation: Emulation,
-    emulation_os: EmulationOS,
+    browser: Option<BrowserEmulation>,
+    browser_os: Option<BrowserEmulationOS>,
+    emulation_json: Option<Arc<str>>,
     proxy: Option<Arc<str>>,
     insecure: bool,
     connect_timeout: Option<Duration>,
@@ -104,8 +108,9 @@ impl SessionConfig {
     #[inline]
     fn from_request(options: &RequestOptions) -> Self {
         Self {
-            emulation: options.emulation,
-            emulation_os: options.emulation_os,
+            browser: options.browser,
+            browser_os: options.browser_os,
+            emulation_json: options.emulation_json.clone(),
             proxy: options.proxy.clone(),
             insecure: options.insecure,
             connect_timeout: options.connect_timeout.map(Duration::from_millis),
@@ -116,8 +121,9 @@ impl SessionConfig {
 
 #[derive(Debug, Clone)]
 struct TransportConfig {
-    emulation: Emulation,
-    emulation_os: EmulationOS,
+    browser: Option<BrowserEmulation>,
+    browser_os: Option<BrowserEmulationOS>,
+    emulation_json: Option<Arc<str>>,
     proxy: Option<Arc<str>>,
     insecure: bool,
     pool_idle_timeout: Option<Duration>,
@@ -131,8 +137,9 @@ impl TransportConfig {
     #[inline]
     fn from_request(options: &RequestOptions) -> Self {
         Self {
-            emulation: options.emulation,
-            emulation_os: options.emulation_os,
+            browser: options.browser,
+            browser_os: options.browser_os,
+            emulation_json: options.emulation_json.clone(),
             proxy: options.proxy.clone(),
             insecure: options.insecure,
             pool_idle_timeout: options.pool_idle_timeout.map(Duration::from_millis),
@@ -145,8 +152,9 @@ impl TransportConfig {
 
     #[inline]
     fn new(
-        emulation: Emulation,
-        emulation_os: EmulationOS,
+        browser: Option<BrowserEmulation>,
+        browser_os: Option<BrowserEmulationOS>,
+        emulation_json: Option<Arc<str>>,
         proxy: Option<Arc<str>>,
         insecure: bool,
         pool_idle_timeout: Option<u64>,
@@ -156,8 +164,9 @@ impl TransportConfig {
         read_timeout: Option<u64>,
     ) -> Self {
         Self {
-            emulation,
-            emulation_os,
+            browser,
+            browser_os,
+            emulation_json,
             proxy,
             insecure,
             pool_idle_timeout: pool_idle_timeout.map(Duration::from_millis),
@@ -425,12 +434,14 @@ async fn make_request_inner(
     // Apply custom headers and preserve their original casing.
     // Without this, wreq's browser emulation title-cases all header names
     // (e.g. "X-ECG-Authorization-User" → "X-Ecg-Authorization-User").
-    let mut orig = OrigHeaderMap::new();
-    for (key, value) in headers.iter() {
-        request = request.header(key, value);
-        orig.insert(key.clone());
+    if !headers.is_empty() {
+        let mut orig = OrigHeaderMap::new();
+        for (key, value) in headers.iter() {
+            request = request.header(key, value);
+            orig.insert(key.clone());
+        }
+        request = request.orig_headers(orig);
     }
-    request = request.orig_headers(orig);
 
     // Disable default headers if requested to prevent emulation headers from being appended
     if disable_default_headers {
@@ -515,10 +526,11 @@ async fn make_request_inner(
 
 /// Build a client for explicit transports (full pooling config).
 fn build_client(config: &TransportConfig) -> Result<HttpClient> {
-    let emulation = EmulationOption::builder()
-        .emulation(config.emulation)
-        .emulation_os(config.emulation_os)
-        .build();
+    let emulation = resolve_emulation(
+        config.browser,
+        config.browser_os,
+        config.emulation_json.as_deref(),
+    )?;
 
     let mut client_builder = HttpClient::builder().emulation(emulation);
 
@@ -558,10 +570,11 @@ fn build_client(config: &TransportConfig) -> Result<HttpClient> {
 
 /// Build a client for ephemeral (stateless) requests - no connection pooling.
 fn build_ephemeral_client(config: &SessionConfig) -> Result<HttpClient> {
-    let emulation = EmulationOption::builder()
-        .emulation(config.emulation)
-        .emulation_os(config.emulation_os)
-        .build();
+    let emulation = resolve_emulation(
+        config.browser,
+        config.browser_os,
+        config.emulation_json.as_deref(),
+    )?;
 
     let mut client_builder = HttpClient::builder()
         .emulation(emulation)
@@ -613,8 +626,9 @@ pub fn drop_managed_session(session_id: &str) {
 }
 
 pub fn create_managed_transport(
-    emulation: Emulation,
-    emulation_os: EmulationOS,
+    browser: Option<BrowserEmulation>,
+    browser_os: Option<BrowserEmulationOS>,
+    emulation_json: Option<Arc<str>>,
     proxy: Option<Arc<str>>,
     insecure: bool,
     pool_idle_timeout: Option<u64>,
@@ -624,8 +638,9 @@ pub fn create_managed_transport(
     read_timeout: Option<u64>,
 ) -> Result<String> {
     let config = TransportConfig::new(
-        emulation,
-        emulation_os,
+        browser,
+        browser_os,
+        emulation_json,
         proxy,
         insecure,
         pool_idle_timeout,
@@ -652,8 +667,9 @@ mod tests {
     fn base_request_options() -> RequestOptions {
         RequestOptions {
             url: "http://127.0.0.1".to_string(),
-            emulation: Emulation::Chrome142,
-            emulation_os: EmulationOS::MacOS,
+            browser: Some(BrowserEmulation::Chrome142),
+            browser_os: Some(BrowserEmulationOS::MacOS),
+            emulation_json: None,
             headers: Vec::new(),
             method: "GET".to_string(),
             body: None,
@@ -692,7 +708,6 @@ mod tests {
         assert_ne!(base_config, read_config);
         assert_ne!(connect_config, read_config);
     }
-
 }
 
 /// Get cookies from a session's jar that would be sent to the given URL
@@ -701,7 +716,9 @@ pub fn get_session_cookies(session_id: &str, url: &str) -> Result<Vec<(String, S
     use wreq::cookie::CookieStore;
 
     let jar = SESSION_MANAGER.jar_for(session_id)?;
-    let uri: wreq::Uri = url.parse().with_context(|| format!("Invalid URL: {}", url))?;
+    let uri: wreq::Uri = url
+        .parse()
+        .with_context(|| format!("Invalid URL: {}", url))?;
     let cookie_header = jar.cookies(&uri);
 
     let pairs = match cookie_header {
@@ -748,7 +765,9 @@ pub fn set_session_cookie(session_id: &str, name: &str, value: &str, url: &str) 
         .as_str()
         .into_cookie()
         .ok_or_else(|| anyhow!("Invalid cookie string: {}", cookie_str))?;
-    let uri: wreq::Uri = url.parse().with_context(|| format!("Invalid URL: {}", url))?;
+    let uri: wreq::Uri = url
+        .parse()
+        .with_context(|| format!("Invalid URL: {}", url))?;
 
     let jar = SESSION_MANAGER.jar_for(session_id)?;
     jar.add(cookie, uri);

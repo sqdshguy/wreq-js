@@ -122,7 +122,7 @@ describe("Transport API", () => {
     );
   });
 
-  test("rejects transport with browser/os/proxy/insecure overrides", async () => {
+  test("rejects transport with browser/os/emulation/proxy/insecure overrides", async () => {
     const transport = await createTransport({ browser: "chrome_142" });
 
     try {
@@ -136,25 +136,36 @@ describe("Transport API", () => {
       await assert.rejects(
         wreqFetch(httpUrl("/get"), { transport, browser: "chrome_142" }),
         (error: unknown) =>
-          error instanceof RequestError && /cannot be combined with browser\/os\/proxy\/insecure/.test(error.message),
+          error instanceof RequestError &&
+          /cannot be combined with browser\/os\/emulation\/proxy\/insecure/.test(error.message),
       );
 
       await assert.rejects(
         wreqFetch(httpUrl("/get"), { transport, os: "linux" }),
         (error: unknown) =>
-          error instanceof RequestError && /cannot be combined with browser\/os\/proxy\/insecure/.test(error.message),
+          error instanceof RequestError &&
+          /cannot be combined with browser\/os\/emulation\/proxy\/insecure/.test(error.message),
+      );
+
+      await assert.rejects(
+        wreqFetch(httpUrl("/get"), { transport, emulation: { headers: { "X-Test": "alpha" } } }),
+        (error: unknown) =>
+          error instanceof RequestError &&
+          /cannot be combined with browser\/os\/emulation\/proxy\/insecure/.test(error.message),
       );
 
       await assert.rejects(
         wreqFetch(httpUrl("/get"), { transport, proxy: "http://proxy.example.com:8080" }),
         (error: unknown) =>
-          error instanceof RequestError && /cannot be combined with browser\/os\/proxy\/insecure/.test(error.message),
+          error instanceof RequestError &&
+          /cannot be combined with browser\/os\/emulation\/proxy\/insecure/.test(error.message),
       );
 
       await assert.rejects(
         wreqFetch(httpUrl("/get"), { transport, insecure: true }),
         (error: unknown) =>
-          error instanceof RequestError && /cannot be combined with browser\/os\/proxy\/insecure/.test(error.message),
+          error instanceof RequestError &&
+          /cannot be combined with browser\/os\/emulation\/proxy\/insecure/.test(error.message),
       );
     } finally {
       await transport.close();
@@ -248,6 +259,32 @@ describe("Transport API", () => {
       assert.strictEqual(overrideBody.headers["X-Session"], "beta");
     } finally {
       await session.close();
+    }
+  });
+
+  test("createTransport({ emulation }) works without browser/os and can be reused", async () => {
+    const transport = await createTransport({
+      emulation: {
+        headers: {
+          "User-Agent": "Standalone Transport/1.0",
+          "X-Transport-Emulation": "alpha",
+        },
+      },
+    });
+
+    try {
+      const first = await wreqFetch(httpUrl("/headers"), { transport, timeout: 10_000 });
+      const second = await wreqFetch(httpUrl("/headers"), { transport, timeout: 10_000 });
+
+      const firstBody = await first.json<{ headers: Record<string, string> }>();
+      const secondBody = await second.json<{ headers: Record<string, string> }>();
+
+      assert.strictEqual(firstBody.headers["User-Agent"], "Standalone Transport/1.0");
+      assert.strictEqual(firstBody.headers["X-Transport-Emulation"], "alpha");
+      assert.strictEqual(secondBody.headers["User-Agent"], "Standalone Transport/1.0");
+      assert.strictEqual(secondBody.headers["X-Transport-Emulation"], "alpha");
+    } finally {
+      await transport.close();
     }
   });
 });

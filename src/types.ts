@@ -50,6 +50,114 @@ export type HeadersInit =
   | Array<HeaderTuple>
   | Record<string, string | number | boolean | null | undefined>;
 
+export type AlpnProtocol = "HTTP1" | "HTTP2" | "HTTP3";
+
+export type AlpsProtocol = "HTTP1" | "HTTP2" | "HTTP3";
+
+export type TlsVersion = "1.0" | "1.1" | "1.2" | "1.3" | "TLS1.0" | "TLS1.1" | "TLS1.2" | "TLS1.3";
+
+export type Http2PseudoHeaderId = "Method" | "Scheme" | "Authority" | "Path" | "Protocol";
+
+export type Http2SettingId =
+  | "HeaderTableSize"
+  | "EnablePush"
+  | "MaxConcurrentStreams"
+  | "InitialWindowSize"
+  | "MaxFrameSize"
+  | "MaxHeaderListSize"
+  | "EnableConnectProtocol"
+  | "NoRfc7540Priorities";
+
+export interface Http2StreamDependency {
+  dependencyId: number;
+  weight: number;
+  exclusive?: boolean;
+}
+
+export interface Http2Priority {
+  streamId: number;
+  dependency: Http2StreamDependency;
+}
+
+export interface Http2ExperimentalSetting {
+  id: number;
+  value: number;
+}
+
+export interface CustomTlsOptions {
+  alpnProtocols?: AlpnProtocol[];
+  alpsProtocols?: AlpsProtocol[];
+  alpsUseNewCodepoint?: boolean;
+  sessionTicket?: boolean;
+  minTlsVersion?: TlsVersion;
+  maxTlsVersion?: TlsVersion;
+  preSharedKey?: boolean;
+  enableEchGrease?: boolean;
+  permuteExtensions?: boolean;
+  greaseEnabled?: boolean;
+  enableOcspStapling?: boolean;
+  enableSignedCertTimestamps?: boolean;
+  recordSizeLimit?: number;
+  pskSkipSessionTicket?: boolean;
+  keySharesLimit?: number;
+  pskDheKe?: boolean;
+  renegotiation?: boolean;
+  delegatedCredentials?: string;
+  curvesList?: string;
+  cipherList?: string;
+  sigalgsList?: string;
+  certificateCompressionAlgorithms?: Array<"zlib" | "brotli" | "zstd">;
+  extensionPermutation?: number[];
+  aesHwOverride?: boolean;
+  preserveTls13CipherList?: boolean;
+  randomAesHwOverride?: boolean;
+}
+
+export interface CustomHttp1Options {
+  http09Responses?: boolean;
+  writev?: boolean;
+  maxHeaders?: number;
+  readBufExactSize?: number;
+  maxBufSize?: number;
+  ignoreInvalidHeadersInResponses?: boolean;
+  allowSpacesAfterHeaderNameInResponses?: boolean;
+  allowObsoleteMultilineHeadersInResponses?: boolean;
+}
+
+export interface CustomHttp2Options {
+  adaptiveWindow?: boolean;
+  initialStreamId?: number;
+  initialConnectionWindowSize?: number;
+  initialWindowSize?: number;
+  initialMaxSendStreams?: number;
+  maxFrameSize?: number;
+  keepAliveInterval?: number;
+  keepAliveTimeout?: number;
+  keepAliveWhileIdle?: boolean;
+  maxConcurrentResetStreams?: number;
+  maxSendBufferSize?: number;
+  maxConcurrentStreams?: number;
+  maxHeaderListSize?: number;
+  maxPendingAcceptResetStreams?: number;
+  enablePush?: boolean;
+  headerTableSize?: number;
+  enableConnectProtocol?: boolean;
+  noRfc7540Priorities?: boolean;
+  settingsOrder?: Http2SettingId[];
+  headersPseudoOrder?: Http2PseudoHeaderId[];
+  headersStreamDependency?: Http2StreamDependency;
+  priorities?: Http2Priority[];
+  experimentalSettings?: Http2ExperimentalSetting[];
+}
+
+export interface CustomEmulationOptions {
+  tlsOptions?: CustomTlsOptions;
+  http1Options?: CustomHttp1Options;
+  http2Options?: CustomHttp2Options;
+  headers?: HeadersInit;
+  origHeaders?: string[];
+}
+
 /**
  * Represents the various types of data that can be used as a request body.
  * Supports strings, binary payloads, URL-encoded parameters, multipart forms, and blobs.
@@ -192,6 +300,13 @@ export interface RequestInit {
   os?: EmulationOS;
 
   /**
+   * Custom emulation overrides. When `browser` or `os` is present, these fields
+   * layer on top of the resolved preset profile. When both are omitted, this
+   * switches the request into standalone custom emulation mode.
+   */
+  emulation?: CustomEmulationOptions;
+
+  /**
    * Proxy URL to route the request through (e.g., 'http://proxy.example.com:8080').
    * Proxy support depends on the native layer and proxy scheme.
    * Ignored when `transport` is provided.
@@ -280,6 +395,11 @@ export interface CreateSessionOptions {
    * Operating system to bind to this session. Defaults to 'macos'.
    */
   os?: EmulationOS;
+
+  /**
+   * Custom emulation overrides or a standalone custom emulation for the session transport.
+   */
+  emulation?: CustomEmulationOptions;
   /**
    * Optional proxy for every request made through the session.
    */
@@ -324,6 +444,11 @@ export interface CreateTransportOptions {
    * Operating system to emulate for this transport.
    */
   os?: EmulationOS;
+
+  /**
+   * Custom emulation overrides or a standalone custom emulation for this transport.
+   */
+  emulation?: CustomEmulationOptions;
 
   /**
    * Disable HTTPS certificate verification for this transport.
@@ -395,6 +520,13 @@ export interface RequestOptions {
    * @default 'macos'
    */
   os?: EmulationOS;
+
+  /**
+   * Custom emulation overrides. When `browser` or `os` is present, these fields
+   * layer on top of the resolved preset profile. When both are omitted, this
+   * switches the request into standalone custom emulation mode.
+   */
+  emulation?: CustomEmulationOptions;
 
   /**
    * HTTP method to use for the request.
@@ -569,6 +701,13 @@ export interface WebSocketOptions {
   os?: EmulationOS;
 
   /**
+   * Custom emulation overrides. When `browser` or `os` is present, these fields
+   * layer on top of the resolved preset profile. When both are omitted, this
+   * switches the handshake into standalone custom emulation mode.
+   */
+  emulation?: CustomEmulationOptions;
+
+  /**
    * Additional headers to send with the WebSocket upgrade request.
    * Common headers include Authorization, Origin, or custom application headers.
    */
@@ -615,7 +754,7 @@ export interface LegacyWebSocketOptions extends WebSocketOptions {
   onError?: (error: string) => void;
 }
 
-export type SessionWebSocketOptions = Omit<WebSocketOptions, "browser" | "os" | "proxy">;
+export type SessionWebSocketOptions = Omit<WebSocketOptions, "browser" | "os" | "proxy" | "emulation">;
 
 export interface LegacySessionWebSocketOptions extends SessionWebSocketOptions {
   /**
