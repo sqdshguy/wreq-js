@@ -178,9 +178,17 @@ impl TransportConfig {
     }
 }
 
+/// Bundles an HTTP client with the emulation-level OrigHeaderMap so that
+/// per-request orig_headers can be merged (not replaced) when user headers
+/// are present.
+pub(crate) struct ResolvedClient {
+    pub(crate) http_client: HttpClient,
+    pub(crate) emulation_orig_headers: OrigHeaderMap,
+}
+
 #[derive(Clone)]
 struct TransportEntry {
-    client: Arc<HttpClient>,
+    client: Arc<ResolvedClient>,
 }
 
 #[derive(Clone)]
@@ -197,7 +205,7 @@ struct SessionManager {
 }
 
 struct EphemeralClientManager {
-    cache: Cache<SessionConfig, Arc<HttpClient>>,
+    cache: Cache<SessionConfig, Arc<ResolvedClient>>,
 }
 
 pub type ResponseBodyStream = Pin<Box<dyn Stream<Item = wreq::Result<Bytes>> + Send>>;
@@ -284,14 +292,14 @@ impl TransportManager {
     }
 
     fn create_transport(&self, config: TransportConfig) -> Result<String> {
-        let client = Arc::new(build_client(&config)?);
-        let entry = Arc::new(TransportEntry { client });
+        let resolved = Arc::new(build_client(&config)?);
+        let entry = Arc::new(TransportEntry { client: resolved });
         let id = Uuid::new_v4().to_string();
         self.explicit.insert(id.clone(), entry);
         Ok(id)
     }
 
-    fn get_transport(&self, transport_id: &str) -> Result<Arc<HttpClient>> {
+    fn get_transport(&self, transport_id: &str) -> Result<Arc<ResolvedClient>> {
         self.explicit
             .get(transport_id)
             .map(|entry| entry.client.clone())
@@ -355,14 +363,14 @@ impl EphemeralClientManager {
         }
     }
 
-    fn client_for(&self, config: SessionConfig) -> Result<Arc<HttpClient>> {
-        if let Some(client) = self.cache.get(&config) {
-            return Ok(client);
+    fn client_for(&self, config: SessionConfig) -> Result<Arc<ResolvedClient>> {
+        if let Some(resolved) = self.cache.get(&config) {
+            return Ok(resolved);
         }
 
-        let client = Arc::new(build_ephemeral_client(&config)?);
-        self.cache.insert(config, client.clone());
-        Ok(client)
+        let resolved = Arc::new(build_ephemeral_client(&config)?);
+        self.cache.insert(config, resolved.clone());
+        Ok(resolved)
     }
 }
 
@@ -370,7 +378,7 @@ pub async fn make_request(options: RequestOptions) -> Result<Response> {
     let transport_id = options.transport_id.clone();
 
     // Resolve client: explicit transport > ephemeral cache > fresh client
-    let client = if let Some(ref tid) = transport_id {
+    let resolved = if let Some(ref tid) = transport_id {
         TRANSPORT_MANAGER.get_transport(tid)?
     } else if options.ephemeral {
         let config = SessionConfig::from_request(&options);
@@ -387,12 +395,12 @@ pub async fn make_request(options: RequestOptions) -> Result<Response> {
         SESSION_MANAGER.jar_for(&options.session_id)?
     };
 
-    make_request_inner(options, client, cookie_jar).await
+    make_request_inner(options, resolved, cookie_jar).await
 }
 
 async fn make_request_inner(
     options: RequestOptions,
-    client: Arc<HttpClient>,
+    resolved: Arc<ResolvedClient>,
     cookie_jar: Arc<Jar>,
 ) -> Result<Response> {
     let RequestOptions {
@@ -429,13 +437,13 @@ async fn make_request_inner(
     };
 
     // Build request
-    let mut request = client.request(request_method, &url);
+    let mut request = resolved.http_client.request(request_method, &url);
 
     // Apply custom headers and preserve their original casing.
-    // Without this, wreq's browser emulation title-cases all header names
-    // (e.g. "X-ECG-Authorization-User" → "X-Ecg-Authorization-User").
+    // Merge with emulation-level origHeaders so that custom emulation header
+    // casing/order is preserved even when the request adds explicit headers.
     if !headers.is_empty() {
-        let mut orig = OrigHeaderMap::new();
+        let mut orig = resolved.emulation_orig_headers.clone();
         for (key, value) in headers.iter() {
             request = request.header(key, value);
             orig.insert(key.clone());
@@ -525,12 +533,13 @@ async fn make_request_inner(
 }
 
 /// Build a client for explicit transports (full pooling config).
-fn build_client(config: &TransportConfig) -> Result<HttpClient> {
-    let emulation = resolve_emulation(
+fn build_client(config: &TransportConfig) -> Result<ResolvedClient> {
+    let mut emulation = resolve_emulation(
         config.browser,
         config.browser_os,
         config.emulation_json.as_deref(),
     )?;
+    let emulation_orig_headers = emulation.orig_headers_mut().clone();
 
     let mut client_builder = HttpClient::builder().emulation(emulation);
 
@@ -563,18 +572,23 @@ fn build_client(config: &TransportConfig) -> Result<HttpClient> {
         client_builder = client_builder.read_timeout(read_timeout);
     }
 
-    client_builder
+    let http_client = client_builder
         .build()
-        .context("Failed to build HTTP client")
+        .context("Failed to build HTTP client")?;
+    Ok(ResolvedClient {
+        http_client,
+        emulation_orig_headers,
+    })
 }
 
 /// Build a client for ephemeral (stateless) requests - no connection pooling.
-fn build_ephemeral_client(config: &SessionConfig) -> Result<HttpClient> {
-    let emulation = resolve_emulation(
+fn build_ephemeral_client(config: &SessionConfig) -> Result<ResolvedClient> {
+    let mut emulation = resolve_emulation(
         config.browser,
         config.browser_os,
         config.emulation_json.as_deref(),
     )?;
+    let emulation_orig_headers = emulation.orig_headers_mut().clone();
 
     let mut client_builder = HttpClient::builder()
         .emulation(emulation)
@@ -597,9 +611,13 @@ fn build_ephemeral_client(config: &SessionConfig) -> Result<HttpClient> {
         client_builder = client_builder.read_timeout(read_timeout);
     }
 
-    client_builder
+    let http_client = client_builder
         .build()
-        .context("Failed to build HTTP client")
+        .context("Failed to build HTTP client")?;
+    Ok(ResolvedClient {
+        http_client,
+        emulation_orig_headers,
+    })
 }
 
 fn response_allows_body(status: u16, method: &str) -> bool {
@@ -779,7 +797,7 @@ pub(crate) fn get_session_cookie_jar(session_id: &str) -> Result<Arc<Jar>> {
     SESSION_MANAGER.jar_for(session_id)
 }
 
-/// Get the HTTP client for a transport. Used by websocket to share TLS config.
-pub(crate) fn get_transport_client(transport_id: &str) -> Result<Arc<wreq::Client>> {
+/// Get the resolved client for a transport. Used by websocket to share TLS config.
+pub(crate) fn get_transport_resolved(transport_id: &str) -> Result<Arc<ResolvedClient>> {
     TRANSPORT_MANAGER.get_transport(transport_id)
 }

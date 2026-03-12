@@ -11,7 +11,7 @@ use wreq::header::OrigHeaderMap;
 use wreq::ws::WebSocket;
 use wreq::ws::message::{CloseCode, CloseFrame, Message};
 
-use crate::client::{get_session_cookie_jar, get_transport_client};
+use crate::client::{get_session_cookie_jar, get_transport_resolved};
 use crate::custom_emulation::resolve_emulation;
 use wreq_util::{Emulation as BrowserEmulation, EmulationOS as BrowserEmulationOS};
 
@@ -124,11 +124,12 @@ pub async fn connect_websocket(
     WebSocketUpgradeMetadata,
 )> {
     // Build client with emulation and proxy
-    let emulation = resolve_emulation(
+    let mut emulation = resolve_emulation(
         options.browser,
         options.browser_os,
         options.emulation_json.as_deref(),
     )?;
+    let emulation_orig_headers = emulation.orig_headers_mut().clone();
     let mut client_builder = wreq::Client::builder().emulation(emulation);
 
     // Apply proxy if present
@@ -142,7 +143,14 @@ pub async fn connect_websocket(
         .build()
         .context("Failed to build HTTP client")?;
 
-    connect_websocket_with_client(&client, &options.url, &options.headers, &options.protocols).await
+    connect_websocket_with_client(
+        &client,
+        &options.url,
+        &options.headers,
+        &options.protocols,
+        &emulation_orig_headers,
+    )
+    .await
 }
 
 /// Create WebSocket connection using a session's cookies and transport's TLS config.
@@ -157,7 +165,7 @@ pub async fn connect_websocket_with_session(
     futures_util::stream::SplitStream<WebSocket>,
     WebSocketUpgradeMetadata,
 )> {
-    let client = get_transport_client(transport_id)?;
+    let resolved = get_transport_resolved(transport_id)?;
     let cookie_jar = get_session_cookie_jar(session_id)?;
 
     // Extract cookies from the jar for this URL and inject as a Cookie header
@@ -205,14 +213,25 @@ pub async fn connect_websocket_with_session(
         all_headers.push(("Cookie".to_string(), cookie_segments.join("; ")));
     }
 
-    connect_websocket_with_client(&client, url, &all_headers, protocols).await
+    connect_websocket_with_client(
+        &resolved.http_client,
+        url,
+        &all_headers,
+        protocols,
+        &resolved.emulation_orig_headers,
+    )
+    .await
 }
 
 /// Build an OrigHeaderMap with Title-Case header names for HTTP/1.1 WebSocket
-/// upgrade requests. Without this, wreq writes lowercase header names which
-/// Cloudflare's bot detection flags as non-browser traffic (403).
-fn build_ws_orig_headers(user_headers: &[(String, String)]) -> OrigHeaderMap {
-    let mut orig = OrigHeaderMap::new();
+/// upgrade requests. Starts from any emulation-level origHeaders so that custom
+/// emulation casing/order is preserved, then appends standard WS protocol
+/// headers and user-provided headers.
+fn build_ws_orig_headers(
+    emulation_orig_headers: &OrigHeaderMap,
+    user_headers: &[(String, String)],
+) -> OrigHeaderMap {
+    let mut orig = emulation_orig_headers.clone();
 
     // Standard headers in browser-typical order with Title-Case.
     // These cover both emulation-injected and wreq-internal WS headers.
@@ -240,7 +259,7 @@ fn build_ws_orig_headers(user_headers: &[(String, String)]) -> OrigHeaderMap {
         orig.insert(name);
     }
 
-    // User-provided headers with their original casing (overrides above if same name).
+    // User-provided headers with their original casing.
     for (key, _) in user_headers {
         orig.insert(key.clone());
     }
@@ -254,6 +273,7 @@ async fn connect_websocket_with_client(
     url: &str,
     headers: &[(String, String)],
     protocols: &[String],
+    emulation_orig_headers: &OrigHeaderMap,
 ) -> Result<(
     WsConnection,
     futures_util::stream::SplitStream<WebSocket>,
@@ -271,8 +291,9 @@ async fn connect_websocket_with_client(
         request = request.protocols(protocols.iter().cloned());
     }
 
-    // Set original header casing for HTTP/1.1 (Cloudflare rejects lowercase)
-    request = request.orig_headers(build_ws_orig_headers(headers));
+    // Set original header casing for HTTP/1.1 (Cloudflare rejects lowercase).
+    // Merges emulation-level origHeaders with standard WS headers and user headers.
+    request = request.orig_headers(build_ws_orig_headers(emulation_orig_headers, headers));
 
     // Send upgrade request
     let ws_response = request
