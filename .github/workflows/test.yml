@@ -98,7 +98,7 @@ jobs:
         run: node scripts/smoke-native.cjs
 
       - name: Upload native addon artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: bindings-${{ matrix.platform-arch }}
           path: rust/*.node
@@ -176,7 +176,7 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Download native addon artifact
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: bindings-${{ matrix.platform-arch }}
           path: artifacts
@@ -199,7 +199,7 @@ jobs:
 
       - name: Upload coverage
         if: matrix.os == 'ubuntu-24.04' && matrix.node-version == 24 && matrix.arch == 'x64'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-lcov
           path: coverage
