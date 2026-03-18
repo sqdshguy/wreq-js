@@ -164,6 +164,25 @@ function detectLibc(): "gnu" | "musl" | undefined {
 const require =
   typeof import.meta !== "undefined" && import.meta.url ? createRequire(import.meta.url) : createRequire(__filename);
 
+function requirePlatformBinary(platformArch: string) {
+  switch (platformArch) {
+    case "darwin-x64":
+      return require("../rust/wreq-js.darwin-x64.node");
+    case "darwin-arm64":
+      return require("../rust/wreq-js.darwin-arm64.node");
+    case "linux-x64-gnu":
+      return require("../rust/wreq-js.linux-x64-gnu.node");
+    case "linux-x64-musl":
+      return require("../rust/wreq-js.linux-x64-musl.node");
+    case "linux-arm64-gnu":
+      return require("../rust/wreq-js.linux-arm64-gnu.node");
+    case "win32-x64-msvc":
+      return require("../rust/wreq-js.win32-x64-msvc.node");
+    default:
+      return undefined;
+  }
+}
+
 function loadNativeBinding() {
   const platform = process.platform;
   const arch = process.arch;
@@ -195,17 +214,23 @@ function loadNativeBinding() {
   const binaryName = `wreq-js.${platformArch}.node`;
 
   try {
-    return require(`../rust/${binaryName}`);
-  } catch {
-    try {
-      return require("../rust/wreq-js.node");
-    } catch {
-      throw new Error(
-        `Failed to load native module for ${platform}-${arch}. ` +
-          `Tried: ../rust/${binaryName} and ../rust/wreq-js.node. ` +
-          `Make sure the package is installed correctly and the native module is built for your platform.`,
-      );
+    const platformBinding = requirePlatformBinary(platformArch);
+
+    if (platformBinding) {
+      return platformBinding;
     }
+  } catch {
+    // Fall through to the generic binary name below.
+  }
+
+  try {
+    return require("../rust/wreq-js.node");
+  } catch {
+    throw new Error(
+      `Failed to load native module for ${platform}-${arch}. ` +
+        `Tried: ../rust/${binaryName} and ../rust/wreq-js.node. ` +
+        `Make sure the package is installed correctly and the native module is built for your platform.`,
+    );
   }
 }
 

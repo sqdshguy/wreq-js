@@ -8,8 +8,10 @@
   "exports": {
     ".": {
       "types": "./dist/wreq-js.d.ts",
+      "bun": "./dist/wreq-js.cjs",
       "require": "./dist/wreq-js.cjs",
-      "import": "./dist/wreq-js.js"
+      "import": "./dist/wreq-js.js",
+      "default": "./dist/wreq-js.js"
     }
   },
   "scripts": {
