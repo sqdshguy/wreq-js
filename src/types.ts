@@ -1,6 +1,7 @@
 // Import and re-export the auto-generated BrowserProfile and EmulationOS types
 import type { BrowserProfile, EmulationOS } from "./generated-types.js";
 import type { Session, Transport, WebSocket } from "./wreq-js.js";
+
 export type { BrowserProfile, EmulationOS };
 
 /**
