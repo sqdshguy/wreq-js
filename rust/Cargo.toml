@@ -37,7 +37,7 @@ tokio = { version = "1.50.0", features = ["rt-multi-thread", "sync", "macros"] }
 tokio-util = "0.7.18"
 
 # Global state management
-moka = { version = "0.12.14", features = ["sync"] }
+moka = { version = "0.12.15", features = ["sync"] }
 uuid = { version = "1.22.0", features = ["v4"] }
 
 [build-dependencies]
