@@ -97,6 +97,10 @@ jobs:
           WREQ_PLATFORM_ARCH: ${{ matrix.platform-arch }}
         run: node scripts/smoke-native.cjs
 
+      - name: Smoke test TLS verification
+        if: matrix.platform-arch == 'linux-x64-gnu'
+        run: npm run build:ts && npm run smoke:tls
+
       - name: Upload native addon artifact
         uses: actions/upload-artifact@v7
         with:
@@ -196,6 +200,10 @@ jobs:
       - name: Run coverage tests
         if: matrix.os == 'ubuntu-24.04' && matrix.node-version == 24 && matrix.arch == 'x64'
         run: npm exec -- c8 --reporter=text-summary --reporter=lcov -- tsx src/test/run-with-local-server.ts
+
+      - name: Run live TLS smoke test
+        if: matrix.os == 'ubuntu-24.04' && matrix.node-version == 24 && matrix.arch == 'x64'
+        run: npm run build:ts && npm run smoke:tls
 
       - name: Upload coverage
         if: matrix.os == 'ubuntu-24.04' && matrix.node-version == 24 && matrix.arch == 'x64'

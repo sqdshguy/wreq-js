@@ -19,6 +19,7 @@
     "build:rust": "napi build --platform --release --manifest-path rust/Cargo.toml",
     "build:ts": "tsup",
     "artifacts": "napi artifacts",
+    "smoke:tls": "node scripts/smoke-tls.cjs",
     "test": "npm run test:run",
     "test:run": "tsx src/test/run-with-local-server.ts",
     "test:build": "npm run build && npm run test:run",

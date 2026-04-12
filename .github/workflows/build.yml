@@ -175,6 +175,10 @@ jobs:
           WREQ_TARGET: ${{ matrix.settings.target }}
         run: node scripts/smoke-native.cjs
 
+      - name: Smoke test TLS verification
+        if: matrix.settings.target == 'x86_64-unknown-linux-gnu'
+        run: npm run build:ts && npm run smoke:tls
+
       - name: Smoke test native addon (musl)
         if: matrix.settings.target == 'x86_64-unknown-linux-musl'
         run: |
