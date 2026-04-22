@@ -524,8 +524,16 @@ impl SessionManager {
 impl EphemeralClientManager {
     fn new() -> Self {
         Self {
+            // Use time_to_live rather than time_to_idle so the cached
+            // HttpClient is rotated on a fixed schedule. With time_to_idle,
+            // constant load keeps resetting the idle timer and the client
+            // is never evicted — its internal state (hyper connection pool,
+            // LruTlsSessionCache, DNS resolver cache) grows monotonically
+            // with unique origin count because those caches are bounded
+            // per-host but not in total host count. Rotating the client
+            // every 5 minutes drops that accumulated state.
             cache: Cache::builder()
-                .time_to_idle(Duration::from_secs(300))
+                .time_to_live(Duration::from_secs(300))
                 .build(),
         }
     }
