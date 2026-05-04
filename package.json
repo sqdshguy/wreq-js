@@ -84,7 +84,7 @@
     "@biomejs/biome": "^2.4.13",
     "@napi-rs/cli": "^3.6.2",
     "@types/node": "^24.12.2",
-    "@typescript/native-preview": "^7.0.0-dev.20260423.1",
+    "@typescript/native-preview": "^7.0.0-dev.20260430.1",
     "c8": "^11.0.0",
     "husky": "^9.1.7",
     "rimraf": "^6.1.3",
