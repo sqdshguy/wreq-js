@@ -2028,9 +2028,9 @@ dependencies = [
 
 [[package]]
 name = "wreq-util"
-version = "3.0.0-rc.10"
+version = "3.0.0-rc.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c6bbe24d28beb9ceb58b514bd6a613c759d3b706f768b9d2950d5d35b543c04"
+checksum = "b51558351cf26c9a5daeabf5df5bfab13f1666fa783ad7ddb9a573e04d7fae0a"
 dependencies = [
  "serde",
  "strum",
