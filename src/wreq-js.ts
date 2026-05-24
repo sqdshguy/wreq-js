@@ -1127,6 +1127,10 @@ export class Transport {
       throw new RequestError(String(error));
     }
   }
+
+  async [Symbol.asyncDispose]() {
+    await this.close();
+  }
 }
 
 export class Session implements SessionHandle {
@@ -1288,6 +1292,10 @@ export class Session implements SessionHandle {
         throw new RequestError(String(error));
       }
     }
+  }
+
+  async [Symbol.asyncDispose]() {
+    await this.close();
   }
 }
 
@@ -3729,6 +3737,10 @@ export class WebSocket {
     this._closeOptions = normalizeWebSocketCloseOptions(code, reason);
     this.readyState = WebSocket.CLOSING;
     this.startNativeClose();
+  }
+
+  [Symbol.dispose]() {
+    this.close();
   }
 }
 
