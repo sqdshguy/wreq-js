@@ -81,14 +81,14 @@
   },
   "homepage": "https://wreq.sqdsh.win",
   "devDependencies": {
-    "@biomejs/biome": "^2.4.15",
-    "@napi-rs/cli": "^3.6.2",
+    "@biomejs/biome": "^2.4.16",
+    "@napi-rs/cli": "^3.7.0",
     "@types/node": "^24.12.4",
-    "@typescript/native-preview": "^7.0.0-dev.20260521.1",
+    "@typescript/native-preview": "^7.0.0-dev.20260527.2",
     "c8": "^11.0.0",
     "husky": "^9.1.7",
     "rimraf": "^6.1.3",
-    "tsdown": "^0.22.0",
+    "tsdown": "^0.22.1",
     "tsx": "^4.22.3",
     "typescript": "^6.0.3"
   },
