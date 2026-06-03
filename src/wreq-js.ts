@@ -116,6 +116,7 @@ interface NativeRequestOptions {
   sessionId: string;
   ephemeral: boolean;
   disableDefaultHeaders?: boolean;
+  headerOverrides?: HeaderTuple[];
   insecure?: boolean;
   trustStore?: TrustStoreMode;
   transportId?: string;
@@ -2600,6 +2601,12 @@ export async function fetch(input: string | URL | Request, init?: WreqRequestIni
   if (config.disableDefaultHeaders !== undefined) {
     requestOptions.disableDefaultHeaders = config.disableDefaultHeaders;
   }
+  if (config.headerOverrides !== undefined) {
+    const overrideTuples = headersToTuples(config.headerOverrides);
+    if (overrideTuples.length > 0) {
+      requestOptions.headerOverrides = overrideTuples;
+    }
+  }
   if (config.compress !== undefined) {
     requestOptions.compress = config.compress;
   }
@@ -2770,6 +2777,11 @@ export async function request(options: RequestOptions): Promise<Response> {
 
   if (rest.disableDefaultHeaders !== undefined) {
     init.disableDefaultHeaders = rest.disableDefaultHeaders;
+  }
+
+  const legacyOverrides = (rest as Partial<WreqRequestInit>).headerOverrides;
+  if (legacyOverrides !== undefined) {
+    init.headerOverrides = legacyOverrides;
   }
 
   if (rest.redirect !== undefined) {

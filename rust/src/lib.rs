@@ -203,6 +203,13 @@ fn js_object_to_request_options(
         Vec::new()
     };
 
+    // Get headerOverrides (optional) — surgically replace emulation headers
+    let header_overrides = if let Ok(Some(val)) = obj.get_opt(cx, "headerOverrides") {
+        parse_headers_from_value(cx, val)?
+    } else {
+        Vec::new()
+    };
+
     // Get body (optional)
     let body = if let Some(body_value) = obj.get_opt::<JsValue, _, _>(cx, "body")? {
         if body_value.is_a::<JsUndefined, _>(cx) || body_value.is_a::<JsNull, _>(cx) {
@@ -326,6 +333,7 @@ fn js_object_to_request_options(
         browser_os,
         emulation_json,
         headers,
+        header_overrides,
         method,
         body,
         proxy,

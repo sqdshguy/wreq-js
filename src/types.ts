@@ -389,6 +389,15 @@ export interface RequestInit {
   disableDefaultHeaders?: boolean;
 
   /**
+   * Surgically replace specific emulation-injected headers while preserving
+   * the rest of the browser profile defaults. Each entry replaces the
+   * matching header by name. Use instead of `disableDefaultHeaders` when
+   * you want to override specific headers without losing the full emulation
+   * profile.
+   */
+  headerOverrides?: HeadersInit;
+
+  /**
    * Disable HTTPS certificate verification. When enabled, self-signed and invalid
    * certificates will be accepted.
    * Ignored when `transport` is provided.
@@ -694,6 +703,13 @@ export interface RequestOptions {
    * @default false
    */
   disableDefaultHeaders?: boolean;
+
+  /**
+   * Surgically replace specific emulation-injected headers while preserving
+   * the rest of the browser profile defaults. Each entry replaces the
+   * matching header by name.
+   */
+  headerOverrides?: HeadersInit;
 
   /**
    * Disable HTTPS certificate verification. When enabled, self-signed and invalid

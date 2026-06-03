@@ -124,6 +124,7 @@ pub struct RequestOptions {
     pub browser_os: Option<BrowserEmulationOS>,
     pub emulation_json: Option<Arc<str>>,
     pub headers: Vec<(String, String)>,
+    pub header_overrides: Vec<(String, String)>,
     pub method: String,
     pub body: Option<Vec<u8>>,
     pub proxy: Option<Arc<str>>,
@@ -573,6 +574,7 @@ async fn make_request_inner(
     let RequestOptions {
         url,
         headers,
+        header_overrides,
         method,
         body,
         timeout,
@@ -618,9 +620,15 @@ async fn make_request_inner(
     // Apply custom headers and preserve their original casing.
     // Merge with emulation-level origHeaders so that custom emulation header
     // casing/order is preserved even when the request adds explicit headers.
-    if !headers.is_empty() {
+    let has_headers = !headers.is_empty();
+    let has_overrides = !header_overrides.is_empty();
+    if has_headers || has_overrides {
         let mut orig = resolved.emulation_orig_headers.clone();
         for (key, value) in headers.iter() {
+            request = request.header(key, value);
+            orig.insert(key.clone());
+        }
+        for (key, value) in header_overrides.iter() {
             request = request.header(key, value);
             orig.insert(key.clone());
         }
@@ -975,6 +983,7 @@ mod tests {
             browser_os: Some(BrowserEmulationOS::MacOS),
             emulation_json: None,
             headers: Vec::new(),
+            header_overrides: Vec::new(),
             method: "GET".to_string(),
             body: None,
             proxy: None,

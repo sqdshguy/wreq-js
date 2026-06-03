@@ -113,4 +113,35 @@ describe("HTTP headers", () => {
     assert.strictEqual(headers.get("x-another"), "value", "set should overwrite values");
     assert.ok(collected.length >= 2, "entries should iterate all headers");
   });
+
+  test("headerOverrides replaces specific emulation headers", async () => {
+    const customAccept = "text/html";
+    const response = await wreqFetch(httpUrl("/headers"), {
+      browser: "chrome_142",
+      headerOverrides: [["Accept", customAccept]],
+      timeout: 10000,
+    });
+
+    assert.strictEqual(response.status, 200, "Should return status 200");
+    const body = await response.json<{ headers: Record<string, string>; rawHeaders: string[] }>();
+
+    assert.strictEqual(body.headers.Accept, customAccept, "Accept should be overridden to custom value");
+    assert.ok(body.headers["User-Agent"], "User-Agent emulation header should be preserved");
+  });
+
+  test("headerOverrides with headers coexist", async () => {
+    const response = await wreqFetch(httpUrl("/headers"), {
+      browser: "chrome_142",
+      headers: { "X-Custom": "foo" },
+      headerOverrides: [["Accept", "text/html"]],
+      timeout: 10000,
+    });
+
+    assert.strictEqual(response.status, 200, "Should return status 200");
+    const body = await response.json<{ headers: Record<string, string> }>();
+
+    assert.strictEqual(body.headers.Accept, "text/html", "Accept should be overridden");
+    assert.strictEqual(body.headers["X-Custom"], "foo", "Custom header should be present");
+    assert.ok(body.headers["User-Agent"], "User-Agent emulation header should be preserved");
+  });
 });
