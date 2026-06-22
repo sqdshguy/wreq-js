@@ -71,6 +71,26 @@ export type TlsVersion = "1.0" | "1.1" | "1.2" | "1.3" | "TLS1.0" | "TLS1.1" | "
 export type Http2PseudoHeaderId = "Method" | "Scheme" | "Authority" | "Path" | "Protocol";
 export type TrustStoreMode = "combined" | "mozilla" | "defaultPaths";
 
+/**
+ * Overrides DNS resolution for specific hosts.
+ *
+ * Each key is a hostname and each value is one address, or an array of fallback addresses,
+ * written as `ip` or `ip:port`. Following reqwest/wreq semantics the port is optional and ignored,
+ * the request URL's port is always used.
+ *
+ * Useful for pinning a host to an address you have already resolved and vetted
+ * (for example to enforce SSRF protection), split-horizon DNS, or testing
+ * against a local server under a real hostname.
+ *
+ * @example
+ * ```typescript
+ * const transport = await createTransport({
+ *   resolve: { "example.com": "93.184.216.34" },
+ * });
+ * ```
+ */
+export type ResolveMap = Record<string, string | string[]>;
+
 export type Http2SettingId =
   | "HeaderTableSize"
   | "EnablePush"
@@ -538,6 +558,11 @@ export interface CreateTransportOptions {
    * @default "combined"
    */
   trustStore?: TrustStoreMode;
+
+  /**
+   * Override DNS resolution for specific hosts. See {@link ResolveMap}.
+   */
+  resolve?: ResolveMap;
 
   /**
    * Idle timeout for pooled connections (ms).

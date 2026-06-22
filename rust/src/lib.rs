@@ -5,11 +5,11 @@ mod websocket;
 
 use anyhow::anyhow;
 use client::{
-    HTTP_RUNTIME, RedirectMode, RequestEvent, RequestOptions, Response,
+    HTTP_RUNTIME, RedirectMode, RequestEvent, RequestOptions, Response, TrustStoreMode,
     clear_managed_session, create_managed_session, create_managed_transport, drop_body_stream,
     drop_managed_session, drop_managed_transport, generate_session_id, get_all_session_cookies,
     get_session_cookies, make_request, read_body_all as native_read_body_all,
-    read_body_chunk as native_read_body_chunk, set_session_cookie, TrustStoreMode,
+    read_body_chunk as native_read_body_chunk, set_session_cookie,
 };
 use dashmap::DashMap;
 use futures_util::StreamExt;
@@ -19,6 +19,7 @@ use neon::types::{
     buffer::TypedArray,
 };
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use tokio::sync::{Semaphore, mpsc};
@@ -160,6 +161,81 @@ fn parse_headers_from_value(
     }
 
     cx.throw_type_error("headers must be an array or object")
+}
+
+fn parse_socket_addr(value: &str) -> Option<SocketAddr> {
+    if let Ok(addr) = value.parse::<SocketAddr>() {
+        return Some(addr);
+    }
+
+    // The port is ignored by wreq (the request URL's port is used), so a bare IP
+    // address is accepted and paired with a placeholder port.
+    value
+        .parse::<IpAddr>()
+        .ok()
+        .map(|ip| SocketAddr::new(ip, 0))
+}
+
+fn parse_resolve_from_object(
+    cx: &mut FunctionContext,
+    obj: Handle<JsObject>,
+) -> NeonResult<Vec<(String, Vec<SocketAddr>)>> {
+    let keys = obj.get_own_property_names(cx)?;
+    let keys_vec = keys.to_vec(cx)?;
+    let mut entries = Vec::with_capacity(keys_vec.len());
+
+    for key_val in keys_vec {
+        let Ok(key_str) = key_val.downcast::<JsString, _>(cx) else {
+            continue;
+        };
+        let host = key_str.value(cx);
+        let value: Handle<JsValue> = obj.get(cx, host.as_str())?;
+
+        let raw_values = if let Ok(array) = value.downcast::<JsArray, _>(cx) {
+            array.to_vec(cx)?
+        } else if value.is_a::<JsString, _>(cx) {
+            vec![value]
+        } else {
+            return cx.throw_type_error("resolve values must be a string or array of strings");
+        };
+
+        let mut addrs = Vec::with_capacity(raw_values.len());
+        for raw in raw_values {
+            let Ok(addr_str) = raw.downcast::<JsString, _>(cx) else {
+                return cx.throw_type_error("resolve addresses must be strings");
+            };
+            match parse_socket_addr(&addr_str.value(cx)) {
+                Some(addr) => addrs.push(addr),
+                None => {
+                    return cx
+                        .throw_type_error(format!("Invalid resolve address for host '{}'", host));
+                }
+            }
+        }
+
+        if !addrs.is_empty() {
+            entries.push((host, addrs));
+        }
+    }
+
+    Ok(entries)
+}
+
+fn parse_resolve_opt(
+    cx: &mut FunctionContext,
+    obj: Handle<JsObject>,
+    key: &str,
+) -> NeonResult<Vec<(String, Vec<SocketAddr>)>> {
+    let Some(value) = obj.get_opt::<JsValue, _, _>(cx, key)? else {
+        return Ok(Vec::new());
+    };
+
+    if value.is_a::<JsUndefined, _>(cx) || value.is_a::<JsNull, _>(cx) {
+        return Ok(Vec::new());
+    }
+
+    let resolve_obj = value.downcast_or_throw::<JsObject, _>(cx)?;
+    parse_resolve_from_object(cx, resolve_obj)
 }
 
 // Convert JS object to RequestOptions
@@ -546,7 +622,11 @@ fn request_event_to_js_object<'a, C: Context<'a>>(
                 }
             };
         }
-        RequestEvent::Done { timestamp_ms, status, url } => {
+        RequestEvent::Done {
+            timestamp_ms,
+            status,
+            url,
+        } => {
             let event_type = cx.string("done");
             let timestamp = cx.number(timestamp_ms as f64);
             let status_value = cx.number(status as f64);
@@ -736,10 +816,23 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
         connect_timeout_opt,
         read_timeout_opt,
         capture_diagnostics_opt,
+        resolve,
     ) = if let Some(value) = options_value {
         if value.is_a::<JsUndefined, _>(&mut cx) || value.is_a::<JsNull, _>(&mut cx) {
             (
-                None, None, None, None, None, None, None, None, None, None, None, None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Vec::new(),
             )
         } else {
             let obj = value.downcast_or_throw::<JsObject, _>(&mut cx)?;
@@ -791,6 +884,7 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
                 .get_opt(&mut cx, "captureDiagnostics")?
                 .and_then(|v: Handle<JsValue>| v.downcast::<JsBoolean, _>(&mut cx).ok())
                 .map(|v| v.value(&mut cx));
+            let resolve = parse_resolve_opt(&mut cx, obj, "resolve")?;
 
             (
                 browser,
@@ -805,11 +899,24 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
                 connect_timeout,
                 read_timeout,
                 capture_diagnostics,
+                resolve,
             )
         }
     } else {
         (
-            None, None, None, None, None, None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
         )
     };
 
@@ -835,6 +942,7 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
         connect_timeout_opt,
         read_timeout_opt,
         capture_diagnostics,
+        resolve,
     ) {
         Ok(id) => Ok(cx.string(id)),
         Err(e) => {

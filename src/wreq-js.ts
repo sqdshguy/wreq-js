@@ -94,6 +94,7 @@ interface NativeTransportOptions {
   proxy?: string;
   insecure?: boolean;
   trustStore?: TrustStoreMode;
+  resolve?: Record<string, string | string[]>;
   poolIdleTimeout?: number;
   poolMaxIdlePerHost?: number;
   poolMaxSize?: number;
@@ -1786,6 +1787,26 @@ function validatePositiveInteger(value: number, label: string): void {
   }
 }
 
+function validateResolve(resolve: unknown): void {
+  if (typeof resolve !== "object" || resolve === null || Array.isArray(resolve)) {
+    throw new RequestError("resolve must be an object mapping hosts to addresses");
+  }
+
+  for (const [host, value] of Object.entries(resolve)) {
+    const addresses = Array.isArray(value) ? value : [value];
+
+    if (addresses.length === 0) {
+      throw new RequestError(`resolve['${host}'] must provide at least one address`);
+    }
+
+    for (const address of addresses) {
+      if (typeof address !== "string" || address.trim() === "") {
+        throw new RequestError(`resolve['${host}'] addresses must be non-empty strings`);
+      }
+    }
+  }
+}
+
 function validateIntegerInRange(value: number, min: number, max: number, label: string): void {
   validateNonNegativeInteger(value, label);
   if (value < min || value > max) {
@@ -2615,6 +2636,10 @@ export async function createTransport(options?: CreateTransportOptions): Promise
   const mode = resolveEmulationMode(options?.browser, options?.os, options?.emulation);
   validateTrustStore(options?.trustStore);
 
+  if (options?.resolve !== undefined) {
+    validateResolve(options.resolve);
+  }
+
   if (options?.poolIdleTimeout !== undefined) {
     validatePositiveNumber(options.poolIdleTimeout, "poolIdleTimeout");
   }
@@ -2636,6 +2661,7 @@ export async function createTransport(options?: CreateTransportOptions): Promise
       ...(options?.proxy !== undefined && { proxy: options.proxy }),
       ...(options?.insecure !== undefined && { insecure: options.insecure }),
       trustStore: options?.trustStore ?? DEFAULT_TRUST_STORE,
+      ...(options?.resolve !== undefined && { resolve: options.resolve }),
       ...(options?.poolIdleTimeout !== undefined && { poolIdleTimeout: options.poolIdleTimeout }),
       ...(options?.poolMaxIdlePerHost !== undefined && { poolMaxIdlePerHost: options.poolMaxIdlePerHost }),
       ...(options?.poolMaxSize !== undefined && { poolMaxSize: options.poolMaxSize }),

@@ -4,6 +4,7 @@ use dashmap::DashMap;
 use futures_util::{Stream, StreamExt};
 use moka::sync::Cache;
 use std::borrow::Cow;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -201,6 +202,7 @@ struct TransportConfig {
     connect_timeout: Option<Duration>,
     read_timeout: Option<Duration>,
     capture_diagnostics: bool,
+    resolve: Vec<(String, Vec<SocketAddr>)>,
 }
 
 impl TransportConfig {
@@ -219,6 +221,7 @@ impl TransportConfig {
             connect_timeout: options.connect_timeout.map(Duration::from_millis),
             read_timeout: options.read_timeout.map(Duration::from_millis),
             capture_diagnostics: options.capture_diagnostics,
+            resolve: Vec::new(),
         }
     }
 
@@ -236,6 +239,7 @@ impl TransportConfig {
         connect_timeout: Option<u64>,
         read_timeout: Option<u64>,
         capture_diagnostics: bool,
+        resolve: Vec<(String, Vec<SocketAddr>)>,
     ) -> Self {
         Self {
             browser,
@@ -250,6 +254,7 @@ impl TransportConfig {
             connect_timeout: connect_timeout.map(Duration::from_millis),
             read_timeout: read_timeout.map(Duration::from_millis),
             capture_diagnostics,
+            resolve,
         }
     }
 }
@@ -584,12 +589,7 @@ async fn make_request_inner(
         ..
     } = options;
     let start = Instant::now();
-    emit_request_event(
-        &event_sink,
-        RequestEvent::RequestStart {
-            timestamp_ms: 0,
-        },
-    );
+    emit_request_event(&event_sink, RequestEvent::RequestStart { timestamp_ms: 0 });
 
     // Methods are already normalized to uppercase in JS; default to GET when empty.
     let method = if method.is_empty() {
@@ -809,6 +809,10 @@ fn build_client(config: &TransportConfig) -> Result<ResolvedClient> {
         client_builder = client_builder.cert_store(build_cert_store(config.trust_store)?);
     }
 
+    for (domain, addrs) in &config.resolve {
+        client_builder = client_builder.resolve_to_addrs(domain.clone(), addrs.iter().copied());
+    }
+
     if let Some(pool_idle_timeout) = config.pool_idle_timeout {
         client_builder = client_builder.pool_idle_timeout(pool_idle_timeout);
     }
@@ -923,6 +927,7 @@ pub fn create_managed_transport(
     connect_timeout: Option<u64>,
     read_timeout: Option<u64>,
     capture_diagnostics: bool,
+    resolve: Vec<(String, Vec<SocketAddr>)>,
 ) -> Result<String> {
     let config = TransportConfig::new(
         browser,
@@ -937,6 +942,7 @@ pub fn create_managed_transport(
         connect_timeout,
         read_timeout,
         capture_diagnostics,
+        resolve,
     );
     TRANSPORT_MANAGER.create_transport(config)
 }
