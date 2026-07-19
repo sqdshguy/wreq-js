@@ -12,13 +12,13 @@ crate-type = ["cdylib"]
 # HTTP client with browser impersonation
 wreq = { version = "6.0.0-rc.28", default-features = false, features = ["cookies", "gzip", "brotli", "deflate", "zstd", "charset", "system-proxy", "socks", "ws", "stream", "webpki-roots"] }
 wreq-util = { version = "3.0.0-rc.11", features = ["emulation-serde", "emulation-rand"] }
-webpki-root-certs = "1.0.7"
+webpki-root-certs = "1.0.8"
 
 # WebSocket support
 futures-util = "0.3.32"
 
 # Byte buffers for streaming bodies
-bytes = "1.11.1"
+bytes = "1.12.1"
 
 # Neon for Node.js bindings
 neon = { version = "1.1.1", default-features = false, features = ["napi-6"] }
@@ -31,7 +31,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 
 # Error handling
-anyhow = "1.0.102"
+anyhow = "1.0.103"
 
 # Async runtime
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "sync", "macros"] }
@@ -39,7 +39,7 @@ tokio-util = "0.7.18"
 
 # Global state management
 moka = { version = "0.12.15", features = ["sync"] }
-uuid = { version = "1.23.1", features = ["v4"] }
+uuid = { version = "1.23.4", features = ["v4"] }
 
 [build-dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
