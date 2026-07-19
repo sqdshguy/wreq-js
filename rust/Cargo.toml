@@ -24,7 +24,7 @@ bytes = "1.12.1"
 neon = { version = "1.1.1", default-features = false, features = ["napi-6"] }
 
 # Concurrent maps
-dashmap = "6.1.0"
+dashmap = "6.2.1"
 
 # Serialization
 serde = { version = "1.0.228", features = ["derive"] }
