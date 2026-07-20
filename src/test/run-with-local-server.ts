@@ -16,12 +16,22 @@ const httpTestFiles = existsSync(httpTestDir)
       .sort()
   : [];
 
+const unitTestDir = resolve(testDir, "unit");
+const unitTestFiles = existsSync(unitTestDir)
+  ? readdirSync(unitTestDir)
+      .filter((filename) => filename.endsWith(".spec.ts") || filename.endsWith(".spec.js"))
+      .map((filename) => resolve(unitTestDir, filename))
+      .sort()
+  : [];
+
 async function main() {
   const extraArgs = process.argv.slice(2);
   const websocketTestFile = ["websocket.spec.ts", "websocket.spec.js"]
     .map((filename) => resolve(testDir, filename))
     .find((filename) => existsSync(filename));
-  const defaultTestFiles = websocketTestFile ? [...httpTestFiles, websocketTestFile] : httpTestFiles;
+  const defaultTestFiles = websocketTestFile
+    ? [...unitTestFiles, ...httpTestFiles, websocketTestFile]
+    : [...unitTestFiles, ...httpTestFiles];
 
   const normalizeArg = (arg: string): string => {
     const abs = resolve(process.cwd(), arg);

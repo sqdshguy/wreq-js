@@ -562,6 +562,12 @@ export class Headers implements Iterable<[string, string]> {
     return entry ? entry.values.join(", ") : null;
   }
 
+  getSetCookie(): string[] {
+    const entry = this.store.get("set-cookie");
+    if (!entry) return [];
+    return [...entry.values];
+  }
+
   has(name: string): boolean {
     const normalized = this.normalizeName(name);
     return this.store.has(normalized.key);
@@ -597,7 +603,13 @@ export class Headers implements Iterable<[string, string]> {
   [Symbol.iterator](): IterableIterator<[string, string]> {
     const generator = function* (store: Map<string, HeaderStoreEntry>) {
       for (const entry of store.values()) {
-        yield [entry.name, entry.values.join(", ")] as [string, string];
+        if (entry.name.toLowerCase() === "set-cookie") {
+          for (const v of entry.values) {
+            yield [entry.name, v] as [string, string];
+          }
+        } else {
+          yield [entry.name, entry.values.join(", ")] as [string, string];
+        }
       }
     };
 
@@ -607,8 +619,8 @@ export class Headers implements Iterable<[string, string]> {
   toObject(): Record<string, string> {
     const result: Record<string, string> = {};
 
-    for (const [name, value] of this) {
-      result[name] = value;
+    for (const entry of this.store.values()) {
+      result[entry.name] = entry.values.join(", ");
     }
 
     return result;
