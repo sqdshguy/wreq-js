@@ -145,12 +145,14 @@ let nativeBinding: {
   createTransport: (options: NativeTransportOptions) => string;
   dropTransport: (transportId: string) => void;
   getOperatingSystems?: () => string[];
+  getEmulationHeaders?: (browser: string, os: string) => HeaderTuple[];
 };
 
 let cachedProfiles: BrowserProfile[] | undefined;
 let cachedProfileSet: Set<string> | undefined;
 let cachedOperatingSystems: EmulationOS[] | undefined;
 let cachedOperatingSystemSet: Set<string> | undefined;
+const cachedEmulationHeaders = new Map<string, HeaderTuple[]>();
 
 function detectLibc(): "gnu" | "musl" | undefined {
   if (process.platform !== "linux") {
@@ -2896,6 +2898,55 @@ function getOperatingSystemSet(): Set<string> {
   }
 
   return cachedOperatingSystemSet;
+}
+
+/**
+ * Get the headers a browser profile injects into every request, without sending one.
+ *
+ * Returns the emulation's own headers in profile order and original casing. Pass any of
+ * these back through `headers` to override them for a request; the rest of the profile
+ * stays intact.
+ *
+ * @param browser - Browser profile to inspect (defaults to the same profile as {@link fetch})
+ * @param os - Operating system to emulate (defaults to the same OS as {@link fetch})
+ * @returns A {@link Headers} instance holding the profile's default headers
+ *
+ * @example
+ * ```typescript
+ * import { fetch, getEmulationHeaders } from 'wreq-js';
+ *
+ * const defaults = getEmulationHeaders('firefox_147');
+ * const userAgent = defaults.get('user-agent');
+ *
+ * // Reuse the profile's User-Agent while sending your own headers
+ * await fetch('https://example.com', {
+ *   browser: 'firefox_147',
+ *   headers: { 'X-Client': `proxy (${userAgent})` },
+ * });
+ * ```
+ */
+export function getEmulationHeaders(browser?: BrowserProfile, os?: EmulationOS): Headers {
+  validateBrowserProfile(browser);
+  validateOperatingSystem(os);
+
+  const resolvedBrowser = browser ?? DEFAULT_BROWSER;
+  const resolvedOs = os ?? DEFAULT_OS;
+  const cacheKey = `${resolvedBrowser} ${resolvedOs}`;
+
+  let tuples = cachedEmulationHeaders.get(cacheKey);
+  if (!tuples) {
+    const readEmulationHeaders = nativeBinding.getEmulationHeaders;
+    if (!readEmulationHeaders) {
+      throw new RequestError("getEmulationHeaders is not available in this build of the native addon");
+    }
+
+    // Emulation headers are fixed per profile, so resolve the emulation once.
+    tuples = readEmulationHeaders(resolvedBrowser, resolvedOs);
+    cachedEmulationHeaders.set(cacheKey, tuples);
+  }
+
+  // Fresh instance per call - callers must not be able to mutate the cache.
+  return new Headers(tuples);
 }
 
 /**

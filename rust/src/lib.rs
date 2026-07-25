@@ -759,6 +759,33 @@ fn get_profiles(mut cx: FunctionContext) -> JsResult<JsArray> {
     Ok(js_array)
 }
 
+// Get the headers a browser profile injects, without sending a request
+fn get_emulation_headers(mut cx: FunctionContext) -> JsResult<JsArray> {
+    let browser_str = cx.argument::<JsString>(0)?.value(&mut cx);
+    let os_str = cx.argument::<JsString>(1)?.value(&mut cx);
+
+    let headers = match custom_emulation::preset_emulation_headers(
+        parse_emulation(&browser_str),
+        parse_emulation_os(&os_str),
+    ) {
+        Ok(headers) => headers,
+        Err(err) => return cx.throw_error(format!("{err:#}")),
+    };
+
+    let js_array = JsArray::new(&mut cx, headers.len());
+
+    for (i, (name, value)) in headers.iter().enumerate() {
+        let entry = cx.empty_array();
+        let name_str = cx.string(name);
+        let value_str = cx.string(value);
+        entry.set(&mut cx, 0, name_str)?;
+        entry.set(&mut cx, 1, value_str)?;
+        js_array.set(&mut cx, i as u32, entry)?;
+    }
+
+    Ok(js_array)
+}
+
 // Get list of available operating systems for emulation
 fn get_operating_systems(mut cx: FunctionContext) -> JsResult<JsArray> {
     let js_array = cx.empty_array();
@@ -1689,6 +1716,7 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("cancelBody", cancel_body_stream)?;
     cx.export_function("getProfiles", get_profiles)?;
     cx.export_function("getOperatingSystems", get_operating_systems)?;
+    cx.export_function("getEmulationHeaders", get_emulation_headers)?;
     cx.export_function("createSession", create_session)?;
     cx.export_function("clearSession", clear_session)?;
     cx.export_function("dropSession", drop_session)?;

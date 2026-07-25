@@ -86,6 +86,54 @@ const mobileResponse = await fetch('https://example.com', {
 
 ---
 
+## getEmulationHeaders()
+
+Get the headers a browser profile injects into every request, without sending one.
+
+### Signature
+
+```typescript
+function getEmulationHeaders(browser?: BrowserProfile, os?: EmulationOS): Headers
+```
+
+Both arguments default to the same profile and OS as [`fetch`](/api-reference/fetch).
+
+### Returns
+
+A `Headers` instance holding the profile's headers, in the profile's own order and casing.
+
+Transport-level headers are not included: `Host`, `Connection`, `Content-Length`, and
+`Accept-Encoding` are added per request rather than by the emulation profile.
+
+### Example
+
+```typescript
+import { getEmulationHeaders } from 'wreq-js';
+
+const defaults = getEmulationHeaders('firefox_147');
+console.log(defaults.get('user-agent'));
+// Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:147.0) Gecko/20100101 Firefox/147.0
+```
+
+### Reusing a profile's User-Agent
+
+Passing a header through `headers` replaces the profile's matching header and leaves the
+rest of the fingerprint intact, so read the value first when you want to build on it.
+
+```typescript
+import { fetch, getEmulationHeaders } from 'wreq-js';
+
+const userAgent = getEmulationHeaders('firefox_147', 'windows').get('user-agent');
+
+const response = await fetch('https://example.com', {
+  browser: 'firefox_147',
+  os: 'windows',
+  headers: { 'X-Forwarded-User-Agent': userAgent ?? '' },
+});
+```
+
+---
+
 ## Headers
 
 The `Headers` class for working with HTTP headers.
