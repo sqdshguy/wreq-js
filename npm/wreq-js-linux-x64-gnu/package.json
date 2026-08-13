@@ -1,0 +1,25 @@
+{
+  "name": "wreq-js-linux-x64-gnu",
+  "version": "3.0.0",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "main": "wreq-js.linux-x64-gnu.node",
+  "files": [
+    "wreq-js.linux-x64-gnu.node"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sqdshguy/wreq-js.git"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

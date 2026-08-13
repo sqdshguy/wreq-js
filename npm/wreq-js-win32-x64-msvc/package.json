@@ -1,0 +1,22 @@
+{
+  "name": "wreq-js-win32-x64-msvc",
+  "version": "3.0.0",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "wreq-js.win32-x64-msvc.node",
+  "files": [
+    "wreq-js.win32-x64-msvc.node"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sqdshguy/wreq-js.git"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

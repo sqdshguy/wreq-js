@@ -189,13 +189,17 @@ function loadNativeBinding() {
       return require("../rust/wreq-js.darwin-x64.node");
     } catch {
       try {
-        return require("../rust/wreq-js.node");
+        return require("wreq-js-darwin-x64");
       } catch {
-        throw new Error(
-          "Failed to load native module for darwin-x64. " +
-            "Tried: ../rust/wreq-js.darwin-x64.node and ../rust/wreq-js.node. " +
-            "Make sure the package is installed correctly and the native module is built for your platform.",
-        );
+        try {
+          return require("../rust/wreq-js.node");
+        } catch {
+          throw new Error(
+            "Failed to load native module for darwin-x64. " +
+              "Tried: ../rust/wreq-js.darwin-x64.node, wreq-js-darwin-x64, and ../rust/wreq-js.node. " +
+              "Make sure the package is installed correctly and the native module is built for your platform.",
+          );
+        }
       }
     }
   }
@@ -205,13 +209,17 @@ function loadNativeBinding() {
       return require("../rust/wreq-js.darwin-arm64.node");
     } catch {
       try {
-        return require("../rust/wreq-js.node");
+        return require("wreq-js-darwin-arm64");
       } catch {
-        throw new Error(
-          "Failed to load native module for darwin-arm64. " +
-            "Tried: ../rust/wreq-js.darwin-arm64.node and ../rust/wreq-js.node. " +
-            "Make sure the package is installed correctly and the native module is built for your platform.",
-        );
+        try {
+          return require("../rust/wreq-js.node");
+        } catch {
+          throw new Error(
+            "Failed to load native module for darwin-arm64. " +
+              "Tried: ../rust/wreq-js.darwin-arm64.node, wreq-js-darwin-arm64, and ../rust/wreq-js.node. " +
+              "Make sure the package is installed correctly and the native module is built for your platform.",
+          );
+        }
       }
     }
   }
@@ -222,13 +230,17 @@ function loadNativeBinding() {
         return require("../rust/wreq-js.linux-x64-musl.node");
       } catch {
         try {
-          return require("../rust/wreq-js.node");
+          return require("wreq-js-linux-x64-musl");
         } catch {
-          throw new Error(
-            "Failed to load native module for linux-x64-musl. " +
-              "Tried: ../rust/wreq-js.linux-x64-musl.node and ../rust/wreq-js.node. " +
-              "Make sure the package is installed correctly and the native module is built for your platform.",
-          );
+          try {
+            return require("../rust/wreq-js.node");
+          } catch {
+            throw new Error(
+              "Failed to load native module for linux-x64-musl. " +
+                "Tried: ../rust/wreq-js.linux-x64-musl.node, wreq-js-linux-x64-musl, and ../rust/wreq-js.node. " +
+                "Make sure the package is installed correctly and the native module is built for your platform.",
+            );
+          }
         }
       }
     }
@@ -237,13 +249,17 @@ function loadNativeBinding() {
       return require("../rust/wreq-js.linux-x64-gnu.node");
     } catch {
       try {
-        return require("../rust/wreq-js.node");
+        return require("wreq-js-linux-x64-gnu");
       } catch {
-        throw new Error(
-          "Failed to load native module for linux-x64-gnu. " +
-            "Tried: ../rust/wreq-js.linux-x64-gnu.node and ../rust/wreq-js.node. " +
-            "Make sure the package is installed correctly and the native module is built for your platform.",
-        );
+        try {
+          return require("../rust/wreq-js.node");
+        } catch {
+          throw new Error(
+            "Failed to load native module for linux-x64-gnu. " +
+              "Tried: ../rust/wreq-js.linux-x64-gnu.node, wreq-js-linux-x64-gnu, and ../rust/wreq-js.node. " +
+              "Make sure the package is installed correctly and the native module is built for your platform.",
+          );
+        }
       }
     }
   }
@@ -254,13 +270,17 @@ function loadNativeBinding() {
         return require("../rust/wreq-js.linux-arm64-musl.node");
       } catch {
         try {
-          return require("../rust/wreq-js.node");
+          return require("wreq-js-linux-arm64-musl");
         } catch {
-          throw new Error(
-            "Failed to load native module for linux-arm64-musl. " +
-              "Tried: ../rust/wreq-js.linux-arm64-musl.node and ../rust/wreq-js.node. " +
-              "Make sure the package is installed correctly and the native module is built for your platform.",
-          );
+          try {
+            return require("../rust/wreq-js.node");
+          } catch {
+            throw new Error(
+              "Failed to load native module for linux-arm64-musl. " +
+                "Tried: ../rust/wreq-js.linux-arm64-musl.node, wreq-js-linux-arm64-musl, and ../rust/wreq-js.node. " +
+                "Make sure the package is installed correctly and the native module is built for your platform.",
+            );
+          }
         }
       }
     }
@@ -269,13 +289,17 @@ function loadNativeBinding() {
       return require("../rust/wreq-js.linux-arm64-gnu.node");
     } catch {
       try {
-        return require("../rust/wreq-js.node");
+        return require("wreq-js-linux-arm64-gnu");
       } catch {
-        throw new Error(
-          "Failed to load native module for linux-arm64-gnu. " +
-            "Tried: ../rust/wreq-js.linux-arm64-gnu.node and ../rust/wreq-js.node. " +
-            "Make sure the package is installed correctly and the native module is built for your platform.",
-        );
+        try {
+          return require("../rust/wreq-js.node");
+        } catch {
+          throw new Error(
+            "Failed to load native module for linux-arm64-gnu. " +
+              "Tried: ../rust/wreq-js.linux-arm64-gnu.node, wreq-js-linux-arm64-gnu, and ../rust/wreq-js.node. " +
+              "Make sure the package is installed correctly and the native module is built for your platform.",
+          );
+        }
       }
     }
   }
@@ -285,13 +309,17 @@ function loadNativeBinding() {
       return require("../rust/wreq-js.win32-x64-msvc.node");
     } catch {
       try {
-        return require("../rust/wreq-js.node");
+        return require("wreq-js-win32-x64-msvc");
       } catch {
-        throw new Error(
-          "Failed to load native module for win32-x64-msvc. " +
-            "Tried: ../rust/wreq-js.win32-x64-msvc.node and ../rust/wreq-js.node. " +
-            "Make sure the package is installed correctly and the native module is built for your platform.",
-        );
+        try {
+          return require("../rust/wreq-js.node");
+        } catch {
+          throw new Error(
+            "Failed to load native module for win32-x64-msvc. " +
+              "Tried: ../rust/wreq-js.win32-x64-msvc.node, wreq-js-win32-x64-msvc, and ../rust/wreq-js.node. " +
+              "Make sure the package is installed correctly and the native module is built for your platform.",
+          );
+        }
       }
     }
   }

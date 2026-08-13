@@ -1,0 +1,25 @@
+{
+  "name": "wreq-js-linux-arm64-musl",
+  "version": "3.0.0",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "libc": [
+    "musl"
+  ],
+  "main": "wreq-js.linux-arm64-musl.node",
+  "files": [
+    "wreq-js.linux-arm64-musl.node"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sqdshguy/wreq-js.git"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

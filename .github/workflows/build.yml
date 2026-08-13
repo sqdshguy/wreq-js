@@ -358,8 +358,28 @@ jobs:
           echo "Collected binaries:"
           ls -la rust/*.node
 
+      - name: Copy artifacts to platform packages
+        run: |
+          cp rust/wreq-js.darwin-x64.node npm/wreq-js-darwin-x64/
+          cp rust/wreq-js.darwin-arm64.node npm/wreq-js-darwin-arm64/
+          cp rust/wreq-js.linux-x64-gnu.node npm/wreq-js-linux-x64-gnu/
+          cp rust/wreq-js.linux-arm64-gnu.node npm/wreq-js-linux-arm64-gnu/
+          cp rust/wreq-js.linux-x64-musl.node npm/wreq-js-linux-x64-musl/
+          cp rust/wreq-js.linux-arm64-musl.node npm/wreq-js-linux-arm64-musl/
+          cp rust/wreq-js.win32-x64-msvc.node npm/wreq-js-win32-x64-msvc/
+
       - name: Build TypeScript
         run: npm run build:ts
+
+      - name: Publish platform packages with trusted publishing
+        run: |
+          npm publish ./npm/wreq-js-darwin-x64 --provenance --access public
+          npm publish ./npm/wreq-js-darwin-arm64 --provenance --access public
+          npm publish ./npm/wreq-js-linux-x64-gnu --provenance --access public
+          npm publish ./npm/wreq-js-linux-arm64-gnu --provenance --access public
+          npm publish ./npm/wreq-js-linux-x64-musl --provenance --access public
+          npm publish ./npm/wreq-js-linux-arm64-musl --provenance --access public
+          npm publish ./npm/wreq-js-win32-x64-msvc --provenance --access public
 
       - name: Publish to npm with trusted publishing
         run: npm publish --provenance --access public

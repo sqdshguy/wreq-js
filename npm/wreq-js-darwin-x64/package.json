@@ -1,0 +1,22 @@
+{
+  "name": "wreq-js-darwin-x64",
+  "version": "3.0.0",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "wreq-js.darwin-x64.node",
+  "files": [
+    "wreq-js.darwin-x64.node"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sqdshguy/wreq-js.git"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

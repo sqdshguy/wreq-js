@@ -105,9 +105,17 @@
     "arm64"
   ],
   "files": [
-    "dist",
-    "rust/*.node"
+    "dist"
   ],
+  "optionalDependencies": {
+    "wreq-js-darwin-arm64": "3.0.0",
+    "wreq-js-darwin-x64": "3.0.0",
+    "wreq-js-linux-arm64-gnu": "3.0.0",
+    "wreq-js-linux-arm64-musl": "3.0.0",
+    "wreq-js-linux-x64-gnu": "3.0.0",
+    "wreq-js-linux-x64-musl": "3.0.0",
+    "wreq-js-win32-x64-msvc": "3.0.0"
+  },
   "napi": {
     "binaryName": "wreq-js",
     "targets": [
