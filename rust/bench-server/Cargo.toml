@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 hyper = { version = "1.10.1", features = ["http1", "server"] }
 hyper-util = { version = "0.1.20", features = ["tokio", "http1"] }
-http-body-util = "0.1.4"
+http-body-util = "0.1.5"
 tokio = { version = "1.53.1", features = ["rt", "net", "macros"] }
 bytes = "1.12.1"
 http = "1.4.2"
