@@ -15,7 +15,7 @@ wreq-util = { version = "3.0.0-rc.14", features = ["emulation-serde", "tokio-rt"
 webpki-root-certs = "1.0.9"
 
 # WebSocket support
-futures-util = "0.3.33"
+futures-util = "0.3.34"
 
 # Byte buffers for streaming bodies
 bytes = "1.12.1"
