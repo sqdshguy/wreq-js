@@ -88,12 +88,19 @@ npm cannot configure a trusted publisher for a package that does not exist yet, 
 can work:
 
 ```bash
+npm install -g npm@latest                          # needs npm 12+, see below
 scripts/bootstrap-platform-packages.sh --dry-run   # inspect
 scripts/bootstrap-platform-packages.sh             # claim names + configure trusted publishing
 ```
 
 This is a one-time step run from a logged-in npm account with 2FA enabled. Every release
 after that is fully automated.
+
+npm 12 or later is required: npm 11 advertises `--allow-publish` in `npm trust github --help`
+but never defines the flag, so the call fails to parse, and since May 2026 the registry
+requires a trusted publisher to name at least one allowed action. The script checks this
+before it publishes anything. Log in interactively rather than with a granular access token —
+token-based auth that bypasses 2FA is not accepted for `npm trust`.
 
 ## Platform-Specific Notes
 
