@@ -1,6 +1,6 @@
 {
   "name": "wreq-js",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Node.js/TypeScript HTTP client with browser TLS fingerprint impersonation (JA3/JA4). Bypass Cloudflare and anti-bot detection. Rust-powered, fetch()-compatible.",
   "type": "module",
   "main": "./dist/wreq-js.cjs",
@@ -114,13 +114,13 @@
     "access": "public"
   },
   "optionalDependencies": {
-    "@wreq-js/binding-darwin-x64": "3.0.0",
-    "@wreq-js/binding-darwin-arm64": "3.0.0",
-    "@wreq-js/binding-linux-x64-gnu": "3.0.0",
-    "@wreq-js/binding-linux-arm64-gnu": "3.0.0",
-    "@wreq-js/binding-linux-x64-musl": "3.0.0",
-    "@wreq-js/binding-linux-arm64-musl": "3.0.0",
-    "@wreq-js/binding-win32-x64-msvc": "3.0.0"
+    "@wreq-js/binding-darwin-x64": "3.1.0",
+    "@wreq-js/binding-darwin-arm64": "3.1.0",
+    "@wreq-js/binding-linux-x64-gnu": "3.1.0",
+    "@wreq-js/binding-linux-arm64-gnu": "3.1.0",
+    "@wreq-js/binding-linux-x64-musl": "3.1.0",
+    "@wreq-js/binding-linux-arm64-musl": "3.1.0",
+    "@wreq-js/binding-win32-x64-msvc": "3.1.0"
   },
   "napi": {
     "binaryName": "wreq-js",
