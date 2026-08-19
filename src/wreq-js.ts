@@ -179,127 +179,83 @@ function detectLibc(): "gnu" | "musl" | undefined {
   }
 }
 
-function loadNativeBinding() {
+const NATIVE_PLATFORMS = [
+  "darwin-x64",
+  "darwin-arm64",
+  "linux-x64-gnu",
+  "linux-x64-musl",
+  "linux-arm64-gnu",
+  "linux-arm64-musl",
+  "win32-x64-msvc",
+] as const;
+
+type NativePlatform = (typeof NATIVE_PLATFORMS)[number];
+
+function resolveNativePlatform(): NativePlatform | undefined {
   const platform = process.platform;
   const arch = process.arch;
-  const libc = detectLibc();
 
   if (platform === "darwin" && arch === "x64") {
-    try {
-      return require("../rust/wreq-js.darwin-x64.node");
-    } catch {
-      try {
-        return require("../rust/wreq-js.node");
-      } catch {
-        throw new Error(
-          "Failed to load native module for darwin-x64. " +
-            "Tried: ../rust/wreq-js.darwin-x64.node and ../rust/wreq-js.node. " +
-            "Make sure the package is installed correctly and the native module is built for your platform.",
-        );
-      }
-    }
+    return "darwin-x64";
   }
 
   if (platform === "darwin" && arch === "arm64") {
-    try {
-      return require("../rust/wreq-js.darwin-arm64.node");
-    } catch {
-      try {
-        return require("../rust/wreq-js.node");
-      } catch {
-        throw new Error(
-          "Failed to load native module for darwin-arm64. " +
-            "Tried: ../rust/wreq-js.darwin-arm64.node and ../rust/wreq-js.node. " +
-            "Make sure the package is installed correctly and the native module is built for your platform.",
-        );
-      }
-    }
+    return "darwin-arm64";
   }
 
   if (platform === "linux" && arch === "x64") {
-    if (libc === "musl") {
-      try {
-        return require("../rust/wreq-js.linux-x64-musl.node");
-      } catch {
-        try {
-          return require("../rust/wreq-js.node");
-        } catch {
-          throw new Error(
-            "Failed to load native module for linux-x64-musl. " +
-              "Tried: ../rust/wreq-js.linux-x64-musl.node and ../rust/wreq-js.node. " +
-              "Make sure the package is installed correctly and the native module is built for your platform.",
-          );
-        }
-      }
-    }
-
-    try {
-      return require("../rust/wreq-js.linux-x64-gnu.node");
-    } catch {
-      try {
-        return require("../rust/wreq-js.node");
-      } catch {
-        throw new Error(
-          "Failed to load native module for linux-x64-gnu. " +
-            "Tried: ../rust/wreq-js.linux-x64-gnu.node and ../rust/wreq-js.node. " +
-            "Make sure the package is installed correctly and the native module is built for your platform.",
-        );
-      }
-    }
+    return detectLibc() === "musl" ? "linux-x64-musl" : "linux-x64-gnu";
   }
 
   if (platform === "linux" && arch === "arm64") {
-    if (libc === "musl") {
-      try {
-        return require("../rust/wreq-js.linux-arm64-musl.node");
-      } catch {
-        try {
-          return require("../rust/wreq-js.node");
-        } catch {
-          throw new Error(
-            "Failed to load native module for linux-arm64-musl. " +
-              "Tried: ../rust/wreq-js.linux-arm64-musl.node and ../rust/wreq-js.node. " +
-              "Make sure the package is installed correctly and the native module is built for your platform.",
-          );
-        }
-      }
-    }
-
-    try {
-      return require("../rust/wreq-js.linux-arm64-gnu.node");
-    } catch {
-      try {
-        return require("../rust/wreq-js.node");
-      } catch {
-        throw new Error(
-          "Failed to load native module for linux-arm64-gnu. " +
-            "Tried: ../rust/wreq-js.linux-arm64-gnu.node and ../rust/wreq-js.node. " +
-            "Make sure the package is installed correctly and the native module is built for your platform.",
-        );
-      }
-    }
+    return detectLibc() === "musl" ? "linux-arm64-musl" : "linux-arm64-gnu";
   }
 
   if (platform === "win32" && arch === "x64") {
+    return "win32-x64-msvc";
+  }
+
+  return undefined;
+}
+
+function loadNativeBinding() {
+  const target = resolveNativePlatform();
+
+  if (!target) {
+    const libc = detectLibc();
+
+    throw new Error(
+      `Unsupported platform: ${process.platform}-${process.arch}${libc ? `-${libc}` : ""}. ` +
+        `Supported platforms: ${NATIVE_PLATFORMS.join(", ")}`,
+    );
+  }
+
+  // Locally built addons win over the published platform package so that
+  // `npm run build:rust` keeps shadowing an installed binding during development.
+  const candidates = [`../rust/wreq-js.${target}.node`, `@wreq-js/binding-${target}`, "../rust/wreq-js.node"];
+
+  let notFoundError: unknown;
+  let loadError: unknown;
+
+  for (const candidate of candidates) {
     try {
-      return require("../rust/wreq-js.win32-x64-msvc.node");
-    } catch {
-      try {
-        return require("../rust/wreq-js.node");
-      } catch {
-        throw new Error(
-          "Failed to load native module for win32-x64-msvc. " +
-            "Tried: ../rust/wreq-js.win32-x64-msvc.node and ../rust/wreq-js.node. " +
-            "Make sure the package is installed correctly and the native module is built for your platform.",
-        );
+      return require(candidate);
+    } catch (error) {
+      // An addon that exists but refuses to load (ABI mismatch, missing system
+      // library) is a more useful diagnostic than the "not found" of a
+      // candidate that was never installed in the first place.
+      if ((error as NodeJS.ErrnoException | undefined)?.code === "MODULE_NOT_FOUND") {
+        notFoundError ??= error;
+      } else {
+        loadError ??= error;
       }
     }
   }
 
   throw new Error(
-    `Unsupported platform: ${platform}-${arch}${libc ? `-${libc}` : ""}. ` +
-      `Supported platforms: darwin-x64, darwin-arm64, linux-x64-gnu, linux-x64-musl, ` +
-      `linux-arm64-gnu, linux-arm64-musl, win32-x64-msvc`,
+    `Failed to load native module for ${target}. Tried: ${candidates.join(", ")}. ` +
+      "Make sure the package is installed correctly and the native module is built for your platform.",
+    { cause: loadError ?? notFoundError },
   );
 }
 

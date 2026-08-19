@@ -349,17 +349,60 @@ jobs:
         with:
           path: artifacts
 
-      - name: Move artifacts to rust directory
+      - name: Collect artifacts into platform packages
         shell: bash
         run: |
-          mkdir -p rust
-          # Copy all .node files from artifacts to rust/
-          find artifacts -name "*.node" -exec cp {} rust/ \;
+          # Fans artifacts/**/*.node out into npm/<platform>/ and fails if any
+          # configured target is missing an addon.
+          npm run artifacts
           echo "Collected binaries:"
-          ls -la rust/*.node
+          ls -la npm/*/*.node
 
       - name: Build TypeScript
         run: npm run build:ts
 
+      - name: Sync versions into platform packages
+        shell: bash
+        run: |
+          # Stamps the root version into every npm/<platform>/package.json and
+          # rewrites the root optionalDependencies to match. Publishing is left
+          # to the steps below so they keep --provenance and --access public.
+          npm run prepublish:napi
+          git --no-pager diff --stat -- package.json npm
+
       - name: Publish to npm with trusted publishing
-        run: npm publish --provenance --access public
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          publish() {
+            local dir="$1"
+            local out
+
+            if out=$(npm publish "$dir" --provenance --access public 2>&1); then
+              printf '%s\n' "$out"
+              return 0
+            fi
+
+            printf '%s\n' "$out"
+
+            # Re-running a release must not fail on packages that already
+            # landed before an earlier attempt died part-way through.
+            case "$out" in
+              *"cannot publish over"*)
+                echo "::warning::$dir is already published at this version, skipping"
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          # Platform packages first: the root package's optionalDependencies
+          # point at this exact version and must resolve on install.
+          for dir in npm/*/; do
+            publish "$dir"
+          done
+
+          publish .

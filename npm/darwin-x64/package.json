@@ -1,0 +1,55 @@
+{
+  "name": "@wreq-js/binding-darwin-x64",
+  "version": "3.0.0",
+  "cpu": [
+    "x64"
+  ],
+  "main": "wreq-js.darwin-x64.node",
+  "files": [
+    "wreq-js.darwin-x64.node"
+  ],
+  "description": "Node.js/TypeScript HTTP client with browser TLS fingerprint impersonation (JA3/JA4). Bypass Cloudflare and anti-bot detection. Rust-powered, fetch()-compatible.",
+  "keywords": [
+    "cloudflare",
+    "cloudflare-bypass",
+    "anti-bot",
+    "bypass",
+    "tls-fingerprint",
+    "browser-fingerprint",
+    "ja3",
+    "ja4",
+    "impersonation",
+    "browser-emulation",
+    "tls",
+    "http2",
+    "fetch",
+    "http-client",
+    "web-scraping",
+    "web-scraper",
+    "crawler",
+    "typescript",
+    "nodejs",
+    "rust",
+    "wreq",
+    "browser"
+  ],
+  "author": "Oleksandr Herasymov <herasymov7@icloud.com>",
+  "homepage": "https://wreq.sqdsh.win",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sqdshguy/wreq-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sqdshguy/wreq-js/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "os": [
+    "darwin"
+  ]
+}

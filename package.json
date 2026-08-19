@@ -19,6 +19,9 @@
     "build:rust": "napi build --platform --release --manifest-path rust/Cargo.toml",
     "build:ts": "tsdown",
     "artifacts": "napi artifacts",
+    "npm:dirs": "napi create-npm-dirs",
+    "npm:version": "napi version",
+    "prepublish:napi": "napi pre-publish --no-gh-release --skip-optional-publish",
     "test": "npm run test:run",
     "test:run": "tsx src/test/run-with-local-server.ts",
     "test:build": "npm run build && npm run test:run",
@@ -105,11 +108,23 @@
     "arm64"
   ],
   "files": [
-    "dist",
-    "rust/*.node"
+    "dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "optionalDependencies": {
+    "@wreq-js/binding-darwin-x64": "3.0.0",
+    "@wreq-js/binding-darwin-arm64": "3.0.0",
+    "@wreq-js/binding-linux-x64-gnu": "3.0.0",
+    "@wreq-js/binding-linux-arm64-gnu": "3.0.0",
+    "@wreq-js/binding-linux-x64-musl": "3.0.0",
+    "@wreq-js/binding-linux-arm64-musl": "3.0.0",
+    "@wreq-js/binding-win32-x64-msvc": "3.0.0"
+  },
   "napi": {
     "binaryName": "wreq-js",
+    "packageName": "@wreq-js/binding",
     "targets": [
       "x86_64-apple-darwin",
       "aarch64-apple-darwin",
