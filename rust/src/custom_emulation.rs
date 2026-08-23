@@ -18,7 +18,7 @@ use wreq::{
 };
 
 use wreq_util::emulate::compress::{BrotliCompressor, ZlibCompressor, ZstdCompressor};
-// wreq-util 3.0.0-rc.14 renamed these: the profile enum is now `Profile`, the OS enum is
+// wreq-util renamed these: the profile enum is now `Profile`, the OS enum is
 // `Platform`, and `EmulationOption` became `Emulation` (which collides with wreq's own
 // `Emulation`, hence the aliases).
 use wreq_util::{
@@ -267,7 +267,7 @@ pub fn resolve_custom_emulation(emulation_json: &str) -> Result<WreqEmulation> {
         );
     }
 
-    // wreq 6.0.0-rc.29 partitions the connection pool by `Group`, so two different custom
+    // wreq partitions the connection pool by `Group`, so two different custom
     // emulations must not share one. Preset profiles get their group from wreq-util; derive
     // ours from the config itself so identical configs pool together and different ones don't.
     let mut group_hash = DefaultHasher::new();

@@ -104,7 +104,7 @@ jobs:
           
           cargo fetch
 
-          # wreq 6.0.0-rc.29 swapped the TLS backend from boring2 to btls, so the
+          # wreq swapped the TLS backend from boring2 to btls, so the
           # BoringSSL build script this patches now ships in btls-sys.
           FILE=$(find ~/.cargo/registry/src -name "main.rs" | grep "btls-sys" | grep "build")
           
