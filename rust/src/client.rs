@@ -975,6 +975,42 @@ mod tests {
 
     static ENV_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
 
+    #[test]
+    fn cookie_origin_uri_maps_websocket_schemes_to_http() {
+        let cases = [
+            (
+                "ws://127.0.0.1:8080/socket?a=1",
+                "http://127.0.0.1:8080/socket?a=1",
+            ),
+            ("wss://example.com/socket", "https://example.com/socket"),
+            ("http://example.com/", "http://example.com/"),
+            ("https://example.com/", "https://example.com/"),
+        ];
+
+        for (input, expected) in cases {
+            let uri: wreq::Uri = input.parse().unwrap();
+            assert_eq!(cookie_origin_uri(&uri).to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn websocket_uris_select_cookies_stored_for_the_http_origin() {
+        use wreq::cookie::CookieStore;
+
+        let jar = Jar::default();
+        jar.add("sessionCookie=jar; Path=/", "http://127.0.0.1:8080/");
+
+        let ws: wreq::Uri = "ws://127.0.0.1:8080/socket".parse().unwrap();
+        let cookies = jar.cookies(&cookie_origin_uri(&ws), wreq::Version::HTTP_11);
+
+        match cookies {
+            wreq::cookie::Cookies::Compressed(value) => {
+                assert_eq!(value.to_str().unwrap(), "sessionCookie=jar");
+            }
+            other => panic!("expected cookies for the ws origin, got {other:?}"),
+        }
+    }
+
     fn base_request_options() -> RequestOptions {
         RequestOptions {
             url: "http://127.0.0.1".to_string(),
@@ -1150,6 +1186,24 @@ mod tests {
     }
 }
 
+/// Map a WebSocket URI onto its HTTP origin for cookie-jar lookups.
+///
+/// wreq's cookie store follows RFC 6265 and only matches `http`/`https` URIs, so a `ws://` or
+/// `wss://` URI would never select a cookie. Browsers scope WebSocket cookies to the equivalent
+/// HTTP origin, so rewrite the scheme before consulting the jar. Non-WebSocket URIs pass through.
+pub(crate) fn cookie_origin_uri(uri: &wreq::Uri) -> Cow<'_, wreq::Uri> {
+    // Dropping the leading "ws" turns ws://host into http://host and wss://host into https://host.
+    let rewritten = match uri.scheme_str() {
+        Some("ws") | Some("wss") => format!("http{}", &uri.to_string()["ws".len()..]),
+        _ => return Cow::Borrowed(uri),
+    };
+
+    match rewritten.parse() {
+        Ok(uri) => Cow::Owned(uri),
+        Err(_) => Cow::Borrowed(uri),
+    }
+}
+
 /// Get cookies from a session's jar that would be sent to the given URL
 /// (RFC 6265 domain/path matching, secure filtering, expiry check).
 pub fn get_session_cookies(session_id: &str, url: &str) -> Result<Vec<(String, String)>> {
@@ -1159,7 +1213,7 @@ pub fn get_session_cookies(session_id: &str, url: &str) -> Result<Vec<(String, S
     let uri: wreq::Uri = url
         .parse()
         .with_context(|| format!("Invalid URL: {}", url))?;
-    let cookie_header = jar.cookies(&uri, wreq::Version::HTTP_11);
+    let cookie_header = jar.cookies(&cookie_origin_uri(&uri), wreq::Version::HTTP_11);
 
     let pairs = match cookie_header {
         wreq::cookie::Cookies::Compressed(header_value) => {
@@ -1255,7 +1309,7 @@ pub fn set_session_cookie(session_id: &str, name: &str, value: &str, url: &str) 
         .with_context(|| format!("Invalid URL: {}", url))?;
 
     let jar = SESSION_MANAGER.jar_for(session_id)?;
-    jar.add(cookie, uri);
+    jar.add(cookie, cookie_origin_uri(&uri).into_owned());
     Ok(())
 }
 

@@ -11,7 +11,7 @@ use wreq::header::OrigHeaderMap;
 use wreq::ws::WebSocket;
 use wreq::ws::message::{CloseCode, CloseFrame, Message};
 
-use crate::client::{get_session_cookie_jar, get_transport_resolved};
+use crate::client::{cookie_origin_uri, get_session_cookie_jar, get_transport_resolved};
 use crate::custom_emulation::resolve_emulation;
 use wreq_util::{Platform as BrowserEmulationOS, Profile as BrowserEmulation};
 
@@ -177,7 +177,8 @@ pub async fn connect_websocket_with_session(
     // Extract cookies from the jar for this URL and inject as a Cookie header
     let uri: wreq::Uri = url.parse().context("Failed to parse WebSocket URL")?;
     // WebSocket upgrades go out over HTTP/1.1, which folds cookies into a single header.
-    let cookies = cookie_jar.cookies(&uri, wreq::Version::HTTP_11);
+    // The jar only matches http/https URIs, so look the cookies up against the HTTP origin.
+    let cookies = cookie_jar.cookies(&cookie_origin_uri(&uri), wreq::Version::HTTP_11);
 
     let mut all_headers: Vec<(String, String)> = Vec::with_capacity(headers.len() + 1);
     let mut cookie_segments: Vec<String> = Vec::new();
