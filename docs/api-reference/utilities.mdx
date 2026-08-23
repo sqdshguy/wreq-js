@@ -164,42 +164,6 @@ const response = await fetch('https://example.com', {
 
 ---
 
-## isNativeAvailable()
-
-Report whether the native addon for the current platform can be loaded.
-
-### Signature
-
-```typescript
-function isNativeAvailable(): boolean
-```
-
-### Returns
-
-`true` when the addon is loadable, `false` otherwise.
-
-The addon is loaded on first use, not when the module is imported, so `import 'wreq-js'`
-never throws — a host that cannot run without it is free to check and fall back instead of
-wrapping its own import in a `try`/`catch`. Calling any other export while this returns
-`false` throws with the underlying reason.
-
-It returns `false` when the platform has no published addon, when the matching
-`@wreq-js/binding-*` package was skipped at install time (`--no-optional`, a strict package
-manager layout, or an install performed for a different platform), or when an addon is
-present but refuses to load, such as on an ABI mismatch.
-
-### Example
-
-```typescript
-import { isNativeAvailable } from 'wreq-js';
-
-if (!isNativeAvailable()) {
-  console.warn('wreq-js native addon unavailable, falling back to global fetch');
-}
-```
-
----
-
 ## Headers
 
 The `Headers` class for working with HTTP headers.

@@ -126,7 +126,7 @@ interface NativeRequestOptions {
   onRequestEvent?: (event: RequestEvent) => void;
 }
 
-type NativeBinding = {
+let nativeBinding: {
   request: (options: NativeRequestOptions, requestId: number, enableCancellation?: boolean) => Promise<NativeResponse>;
   cancelRequest: (requestId: number) => void;
   readBodyChunk: (handleId: number) => Promise<Buffer | null>;
@@ -272,63 +272,12 @@ function loadNativeBinding() {
   );
 }
 
-let nativeBinding: NativeBinding | undefined;
-let nativeLoadError: unknown;
-
-/**
- * Resolve the native addon, loading it on first use.
- *
- * The addon is deliberately not loaded at module scope. Importing a module that
- * throws takes down the host process at startup, which leaves an embedder no way
- * to degrade gracefully - its only defence is to make its own import dynamic. A
- * failure here surfaces when the library is actually used instead, where it can
- * be caught. Both outcomes are memoised so a failed load does not re-run
- * `require` on every call.
- */
-function binding(): NativeBinding {
-  if (nativeBinding) {
-    return nativeBinding;
-  }
-
-  if (nativeLoadError !== undefined) {
-    throw nativeLoadError;
-  }
-
-  try {
-    const loaded: NativeBinding = loadNativeBinding();
-    nativeBinding = loaded;
-    return loaded;
-  } catch (error) {
-    nativeLoadError = error;
-    throw error;
-  }
-}
-
-/**
- * Report whether the native addon for the current platform can be loaded.
- *
- * Importing this package never throws, so an embedder that must keep running
- * without wreq-js can probe with this rather than wrapping the import itself.
- * Returns `false` on an unsupported platform, a binding package that was skipped
- * (`--no-optional`, a strict package manager layout, an install performed for a
- * different platform), or an addon that exists but refuses to load. Calling any
- * other export in those cases throws with the underlying reason.
- */
-export function isNativeAvailable(): boolean {
-  try {
-    binding();
-    return true;
-  } catch {
-    return false;
-  }
-}
+nativeBinding = loadNativeBinding();
 
 const websocketFinalizer =
   typeof FinalizationRegistry === "function"
     ? new FinalizationRegistry<NativeWebSocketConnection>((connection: NativeWebSocketConnection) => {
-        void binding()
-          .websocketClose(connection)
-          .catch(() => undefined);
+        void nativeBinding.websocketClose(connection).catch(() => undefined);
       })
     : undefined;
 
@@ -343,7 +292,7 @@ const bodyHandleFinalizer =
 
         handle.released = true;
         try {
-          binding().cancelBody(handle.id);
+          nativeBinding.cancelBody(handle.id);
         } catch {
           // Best-effort cleanup; ignore binding-level failures.
         }
@@ -760,7 +709,7 @@ function releaseNativeBody(handle: NativeBodyHandle): void {
   handle.released = true;
 
   try {
-    binding().cancelBody(handle.id);
+    nativeBinding.cancelBody(handle.id);
   } catch {
     // Best-effort cleanup; ignore binding errors.
   }
@@ -781,7 +730,7 @@ function createNativeBodyStream(handle: NativeBodyHandle): ReadableStream<Uint8A
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
-        const chunk = await binding().readBodyChunk(handle.id);
+        const chunk = await nativeBinding.readBodyChunk(handle.id);
 
         if (chunk === null) {
           releaseNativeBody(handle);
@@ -1098,7 +1047,7 @@ export class Response {
     if (this.nativeHandleAvailable && this.payload.bodyHandle !== null) {
       this.nativeHandleAvailable = false;
       try {
-        return await binding().readBodyAll(this.payload.bodyHandle);
+        return await nativeBinding.readBodyAll(this.payload.bodyHandle);
       } catch (error) {
         // Handle already consumed or error
         if (String(error).includes("Body handle") && String(error).includes("not found")) {
@@ -1165,7 +1114,7 @@ export class Transport {
     this.disposed = true;
 
     try {
-      binding().dropTransport(this.id);
+      nativeBinding.dropTransport(this.id);
     } catch (error) {
       throw new RequestError(String(error));
     }
@@ -1219,7 +1168,7 @@ export class Session implements SessionHandle {
   async clearCookies(): Promise<void> {
     this.ensureActive();
     try {
-      binding().clearSession(this.id);
+      nativeBinding.clearSession(this.id);
     } catch (error) {
       throw new RequestError(String(error));
     }
@@ -1228,7 +1177,7 @@ export class Session implements SessionHandle {
   getCookies(url: string | URL): Record<string, string> {
     this.ensureActive();
     try {
-      return binding().getCookies(this.id, String(url));
+      return nativeBinding.getCookies(this.id, String(url));
     } catch (error) {
       throw new RequestError(String(error));
     }
@@ -1237,7 +1186,7 @@ export class Session implements SessionHandle {
   getAllCookies(): SessionCookie[] {
     this.ensureActive();
     try {
-      return binding().getAllCookies(this.id);
+      return nativeBinding.getAllCookies(this.id);
     } catch (error) {
       throw new RequestError(String(error));
     }
@@ -1246,7 +1195,7 @@ export class Session implements SessionHandle {
   setCookie(name: string, value: string, url: string | URL): void {
     this.ensureActive();
     try {
-      binding().setCookie(this.id, name, value, String(url));
+      nativeBinding.setCookie(this.id, name, value, String(url));
     } catch (error) {
       throw new RequestError(String(error));
     }
@@ -1285,7 +1234,7 @@ export class Session implements SessionHandle {
       options: normalized.options,
       openDispatchMode: "deferred",
       connect: (callbacks) =>
-        binding().websocketConnectSession({
+        nativeBinding.websocketConnectSession({
           url: normalized.url,
           sessionId: this.id,
           transportId,
@@ -1313,7 +1262,7 @@ export class Session implements SessionHandle {
     const ownsTransport = this.defaults.ownsTransport;
 
     try {
-      binding().dropSession(this.id);
+      nativeBinding.dropSession(this.id);
     } catch (error) {
       if (!ownsTransport || !transportId) {
         throw new RequestError(String(error));
@@ -1321,7 +1270,7 @@ export class Session implements SessionHandle {
       // Fall through to transport cleanup and surface the original error after.
       const originalError = error;
       try {
-        binding().dropTransport(transportId);
+        nativeBinding.dropTransport(transportId);
       } catch {
         // Ignore transport cleanup errors when a session drop error already occurred.
       }
@@ -1330,7 +1279,7 @@ export class Session implements SessionHandle {
 
     if (ownsTransport && transportId) {
       try {
-        binding().dropTransport(transportId);
+        nativeBinding.dropTransport(transportId);
       } catch (error) {
         throw new RequestError(String(error));
       }
@@ -2511,7 +2460,7 @@ async function dispatchRequest(
     let payload: NativeResponse;
 
     try {
-      payload = (await binding().request(options, requestId, false)) as NativeResponse;
+      payload = (await nativeBinding.request(options, requestId, false)) as NativeResponse;
     } catch (error) {
       if (error instanceof RequestError) {
         throw error;
@@ -2525,7 +2474,7 @@ async function dispatchRequest(
   const requestId = generateRequestId();
   const cancelNative = () => {
     try {
-      binding().cancelRequest(requestId);
+      nativeBinding.cancelRequest(requestId);
     } catch {
       // Cancellation is best-effort; ignore binding errors here.
     }
@@ -2535,7 +2484,7 @@ async function dispatchRequest(
   // (impossible here since we checked `!signal` above). Cast is safe; avoids non-null assertion lint.
   const abortHandler = setupAbort(signal, cancelNative) as AbortHandler;
 
-  const pending = Promise.race([binding().request(options, requestId, true), abortHandler.promise]);
+  const pending = Promise.race([nativeBinding.request(options, requestId, true), abortHandler.promise]);
 
   let payload: NativeResponse;
 
@@ -2716,7 +2665,7 @@ export async function createTransport(options?: CreateTransportOptions): Promise
     };
     applyNativeEmulationMode(transportOptions, mode);
 
-    const id = binding().createTransport(transportOptions);
+    const id = nativeBinding.createTransport(transportOptions);
 
     return new Transport(id);
   } catch (error) {
@@ -2740,18 +2689,18 @@ export async function createSession(options?: CreateSessionOptions): Promise<Ses
       }),
     };
     applyNativeEmulationMode(transportOptions, defaults.transportMode);
-    transportId = binding().createTransport(transportOptions);
+    transportId = nativeBinding.createTransport(transportOptions);
   } catch (error) {
     throw new RequestError(String(error));
   }
 
   try {
-    createdId = binding().createSession({
+    createdId = nativeBinding.createSession({
       sessionId,
     });
   } catch (error) {
     try {
-      binding().dropTransport(transportId);
+      nativeBinding.dropTransport(transportId);
     } catch {
       // Best-effort cleanup; prefer surfacing the original error.
     }
@@ -2885,7 +2834,7 @@ export async function request(options: RequestOptions): Promise<Response> {
  */
 export function getProfiles(): BrowserProfile[] {
   if (!cachedProfiles) {
-    cachedProfiles = binding().getProfiles() as BrowserProfile[];
+    cachedProfiles = nativeBinding.getProfiles() as BrowserProfile[];
   }
 
   return cachedProfiles;
@@ -2906,7 +2855,7 @@ function getProfileSet(): Set<string> {
  */
 export function getOperatingSystems(): EmulationOS[] {
   if (!cachedOperatingSystems) {
-    const fromNative = binding().getOperatingSystems?.() as EmulationOS[] | undefined;
+    const fromNative = nativeBinding.getOperatingSystems?.() as EmulationOS[] | undefined;
     cachedOperatingSystems = fromNative && fromNative.length > 0 ? fromNative : [...SUPPORTED_OSES];
   }
 
@@ -2984,7 +2933,7 @@ export function getEmulationHeaders(browser?: BrowserProfile | BrowserAlias, os?
 
   let tuples = cachedEmulationHeaders.get(cacheKey);
   if (!tuples) {
-    const readEmulationHeaders = binding().getEmulationHeaders;
+    const readEmulationHeaders = nativeBinding.getEmulationHeaders;
     if (!readEmulationHeaders) {
       throw new RequestError("getEmulationHeaders is not available in this build of the native addon");
     }
@@ -3431,7 +3380,7 @@ export class WebSocket {
           onError: callbacks.onError,
         };
         applyNativeEmulationMode(nativeOptions, emulationMode);
-        return binding().websocketConnect(nativeOptions);
+        return nativeBinding.websocketConnect(nativeOptions);
       },
       legacyCallbacks: extractLegacyWebSocketCallbacks(optionsCandidate),
     };
@@ -3704,12 +3653,10 @@ export class WebSocket {
     const connection = this._connection;
     const closeOptions = this._closeOptions;
 
-    void binding()
-      .websocketClose(connection, closeOptions)
-      .catch((error) => {
-        this.handleNativeError(String(error));
-        this.finalizeClosed({ code: 1006, reason: "" }, false);
-      });
+    void nativeBinding.websocketClose(connection, closeOptions).catch((error) => {
+      this.handleNativeError(String(error));
+      this.finalizeClosed({ code: 1006, reason: "" }, false);
+    });
   }
 
   addEventListener(
@@ -3858,7 +3805,7 @@ export class WebSocket {
     const sendTask = async () => {
       try {
         const payload = await this.normalizeSendPayload(data);
-        await binding().websocketSend(connection, payload);
+        await nativeBinding.websocketSend(connection, payload);
       } catch (error) {
         this.handleNativeError(String(error));
         this.finalizeClosed({ code: 1006, reason: "" }, false);
@@ -3974,7 +3921,7 @@ export async function websocket(
         onError: callbacks.onError,
       };
       applyNativeEmulationMode(nativeOptions, emulationMode);
-      return binding().websocketConnect(nativeOptions);
+      return nativeBinding.websocketConnect(nativeOptions);
     },
     legacyCallbacks: normalized.legacyCallbacks,
   });
