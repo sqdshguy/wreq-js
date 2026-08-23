@@ -88,6 +88,38 @@ jobs:
           echo "--- NEEDED ---"
           readelf -d rust/*.node | grep NEEDED || true
 
+      - name: Load the addon in a real Termux userland
+        # The question this probe exists to answer. btls-sys links libc++ as a
+        # shared library, so the addon carries NEEDED libc++_shared.so, which
+        # ships with the NDK rather than with Android. Termux resolves it from
+        # $PREFIX/lib, and its nodejs package depends on libc++, so any Termux
+        # that can run Node already has it - but that has to be demonstrated,
+        # not assumed.
+        #
+        # termux/termux-docker is the Termux userland (Bionic, $PREFIX layout,
+        # pkg) as an image. The aarch64 tag matches the addon we just built and
+        # needs binfmt on an x86_64 runner; the Android SDK is only on the
+        # x86_64 runner images, so building here and emulating for the load is
+        # the way round that works.
+        run: |
+          set -eux
+          docker run --rm --privileged aptman/qus -s -- -p aarch64
+
+          docker run --rm --privileged \
+            -e WREQ_PLATFORM_ARCH=android-arm64 \
+            -v "$PWD:/data/data/com.termux/files/home/wreq-js" \
+            -w /data/data/com.termux/files/home/wreq-js \
+            termux/termux-docker:aarch64 \
+            /entrypoint.sh bash -lc '
+              set -eux
+              pkg update -y
+              pkg install -y nodejs
+              node --version
+              # Prove the loader resolves the addon the way Termux will see it.
+              node -e "console.log(process.platform, process.arch)"
+              node scripts/smoke-native.cjs
+            '
+
       - name: Upload addon
         uses: actions/upload-artifact@v7
         with:

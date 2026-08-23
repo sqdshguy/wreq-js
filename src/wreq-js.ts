@@ -188,6 +188,7 @@ const NATIVE_PLATFORMS = [
   "linux-arm64-musl",
   "win32-x64-msvc",
   "win32-arm64-msvc",
+  "android-arm64",
 ] as const;
 
 type NativePlatform = (typeof NATIVE_PLATFORMS)[number];
@@ -195,6 +196,13 @@ type NativePlatform = (typeof NATIVE_PLATFORMS)[number];
 function resolveNativePlatform(): NativePlatform | undefined {
   const platform = process.platform;
   const arch = process.arch;
+
+  // Termux runs Node on Android, where process.platform is "android". Its Bionic
+  // libc is neither glibc nor musl, so it is matched before the linux branches
+  // rather than routed through detectLibc().
+  if (platform === "android" && arch === "arm64") {
+    return "android-arm64";
+  }
 
   if (platform === "darwin" && arch === "x64") {
     return "darwin-x64";
