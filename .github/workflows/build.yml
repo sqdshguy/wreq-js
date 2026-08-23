@@ -49,6 +49,11 @@ jobs:
             arch: arm64
             generator: Ninja
             build: npm run build:rust -- --target aarch64-pc-windows-msvc
+          # Cross-compiled: the Android SDK is only on the x86_64 runner images.
+          - host: ubuntu-24.04
+            target: aarch64-linux-android
+            arch: x64
+            build: npm run build:rust -- --target aarch64-linux-android
 
     name: Build - ${{ matrix.settings.target }}
     runs-on: ${{ matrix.settings.host }}
@@ -238,6 +243,36 @@ jobs:
           print("pointed the ASM language at clang-cl for windows-arm64")
           PY
 
+      - name: Locate libclang for bindgen (Android)
+        if: matrix.settings.target == 'aarch64-linux-android'
+        # The image ships Clang, so no apt install: asking for clang and
+        # libclang-dev here once sat for an hour before being cancelled.
+        run: |
+          set -eux
+          libclang=$(find /usr/lib/llvm-* -name "libclang.so*" 2>/dev/null | head -1)
+          test -n "$libclang"
+          echo "LIBCLANG_PATH=$(dirname "$libclang")" >> "$GITHUB_ENV"
+
+      - name: Build native module (Android)
+        if: matrix.settings.target == 'aarch64-linux-android'
+        env:
+          CARGO_BUILD_TARGET: aarch64-linux-android
+          CARGO_TARGET_DIR: rust/target
+        run: |
+          set -eux
+          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          SYSROOT="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          export PATH="$NDK_BIN:$PATH"
+
+          # API 24 is Termux's floor; btls-sys asks cmake for 21.
+          export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android24-clang"
+          export CXX_aarch64_linux_android="$NDK_BIN/aarch64-linux-android24-clang++"
+          export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
+          export BINDGEN_EXTRA_CLANG_ARGS="--target=aarch64-linux-android24 --sysroot=$SYSROOT"
+
+          ${{ matrix.settings.build }}
+
       - name: Build native module (x86_64 musl target)
         if: matrix.settings.target == 'x86_64-unknown-linux-musl'
         env:
@@ -395,6 +430,36 @@ jobs:
             -w /app \
             node:20-alpine \
             node scripts/smoke-native.cjs
+
+      - name: Smoke test native addon (Termux, android-arm64)
+        if: matrix.settings.target == 'aarch64-linux-android'
+        # termux/termux-docker is the Termux userland - Bionic, the $PREFIX
+        # layout, pkg - as an image. The aarch64 tag matches what we just built
+        # and needs binfmt here, since the Android SDK pins the build to x86_64.
+        #
+        # This exists because the addon carries NEEDED libc++_shared.so, which
+        # ships with the NDK rather than with Android. Termux has it in
+        # $PREFIX/lib, so the load works - assert that rather than trust it.
+        run: |
+          set -eux
+          docker run --rm --privileged aptman/qus -s -- -p aarch64
+
+          docker run --rm --privileged \
+            -v "$PWD:/data/data/com.termux/files/home/wreq-js" \
+            -w /data/data/com.termux/files/home/wreq-js \
+            termux/termux-docker:aarch64 \
+            /entrypoint.sh bash -lc '
+              set -eux
+              # /entrypoint.sh hands off to a login shell, which rebuilds the
+              # environment, so docker -e does not reach in here.
+              export WREQ_PLATFORM_ARCH=android-arm64
+
+              pkg update -y
+              pkg install -y nodejs
+              node -e "console.log(process.platform, process.arch)"
+              ls -l "$PREFIX/lib/libc++_shared.so"
+              node scripts/smoke-native.cjs
+            '
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7

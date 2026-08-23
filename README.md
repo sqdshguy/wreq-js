@@ -31,7 +31,7 @@ npm install wreq-js
 # or: yarn add wreq-js / pnpm add wreq-js / bun add wreq-js
 ```
 
-Prebuilt native binaries ship for macOS (Intel and Apple Silicon), Linux (x64 and arm64, glibc and musl), and Windows (x64 and arm64). Each one lives in its own `@wreq-js/binding-*` package listed under `optionalDependencies`, so an install downloads only the addon your platform actually loads. Platforms outside that list are not supported; build from source with a Rust toolchain instead (see [docs/BUILD.md](docs/BUILD.md)).
+Prebuilt native binaries ship for macOS (Intel and Apple Silicon), Linux (x64 and arm64, glibc and musl), Windows (x64 and arm64), and Android arm64 under Termux. Each one lives in its own `@wreq-js/binding-*` package listed under `optionalDependencies`, so an install downloads only the addon your platform actually loads. Platforms outside that list are not supported; build from source with a Rust toolchain instead (see [docs/BUILD.md](docs/BUILD.md)).
 
 Node.js 20 or newer.
 
