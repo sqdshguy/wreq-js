@@ -112,11 +112,23 @@ jobs:
             termux/termux-docker:aarch64 \
             /entrypoint.sh bash -lc '
               set -eux
+              # /entrypoint.sh hands off to a login shell, which rebuilds the
+              # environment from Termux profile, so docker -e does not survive
+              # into here. Set it where the test actually runs.
+              export WREQ_PLATFORM_ARCH=android-arm64
+
               pkg update -y
               pkg install -y nodejs
               node --version
-              # Prove the loader resolves the addon the way Termux will see it.
+
+              # The loader keys off these two, and Bionic answers "android".
               node -e "console.log(process.platform, process.arch)"
+
+              # The dependency this probe exists to check. libc++ is baseline in
+              # Termux and a declared dependency of its nodejs package, so it is
+              # here before we ask for it - show that rather than assume it.
+              ls -l "$PREFIX/lib/libc++_shared.so"
+
               node scripts/smoke-native.cjs
             '
 
