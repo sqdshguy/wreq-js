@@ -1958,6 +1958,35 @@ dependencies = [
  "btls",
  "btls-sys",
  "bytes",
+ "futures-util",
+ "http",
+ "http-body",
+ "http-body-util",
+ "http2",
+ "httparse",
+ "ipnet",
+ "libc",
+ "lru",
+ "percent-encoding",
+ "pin-project-lite",
+ "socket2",
+ "tokio",
+ "tokio-btls",
+ "tower",
+ "url",
+ "wreq-proto",
+ "wreq-rt",
+]
+
+[[package]]
+name = "wreq"
+version = "6.0.0-rc.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b100d81c46113fa7f0719e43b26b13264b38589a4f059e6ebfccb5308159336"
+dependencies = [
+ "btls",
+ "btls-sys",
+ "bytes",
  "cookie",
  "encoding_rs",
  "futures-util",
@@ -2006,7 +2035,7 @@ dependencies = [
  "tokio-util",
  "uuid",
  "webpki-root-certs",
- "wreq",
+ "wreq 6.0.0-rc.31",
  "wreq-util",
 ]
 
@@ -2051,7 +2080,7 @@ dependencies = [
  "flate2",
  "serde",
  "typed-builder",
- "wreq",
+ "wreq 0.16.0",
  "zstd",
 ]
 
