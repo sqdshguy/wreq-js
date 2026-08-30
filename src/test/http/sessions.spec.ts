@@ -153,6 +153,34 @@ describe("HTTP sessions", () => {
     }
   });
 
+  test("getAllCookies reports every SameSite value", async () => {
+    const session = await createSession({ browser: "chrome_142" });
+
+    try {
+      session.setCookies(
+        [
+          { name: "lax", value: "1", sameSite: "lax" },
+          { name: "strict", value: "1", sameSite: "strict" },
+          // SameSite=None is the case wreq's cookie wrapper cannot tell from an absent attribute.
+          { name: "none", value: "1", sameSite: "none", secure: true },
+          { name: "unset", value: "1" },
+        ],
+        httpUrl("/"),
+      );
+
+      const bySameSite = Object.fromEntries(session.getAllCookies().map((cookie) => [cookie.name, cookie.sameSite]));
+
+      assert.deepStrictEqual(bySameSite, {
+        lax: "lax",
+        strict: "strict",
+        none: "none",
+        unset: undefined,
+      });
+    } finally {
+      await session.close();
+    }
+  });
+
   test("setCookies restores an exported jar with every attribute", async () => {
     const source = await createSession({ browser: "chrome_142" });
     const target = await createSession({ browser: "chrome_142" });

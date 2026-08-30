@@ -1252,17 +1252,20 @@ pub fn get_all_session_cookies(session_id: &str) -> Result<Vec<SessionCookieInfo
 
     Ok(jar
         .get_all()
+        // wreq's wrapper only answers "is it Lax?" and "is it Strict?", which cannot tell
+        // `SameSite=None` apart from an absent attribute. The raw cookie reports the attribute
+        // itself.
+        .map(cookie::Cookie::from)
         .map(|cookie| {
-            let same_site = if cookie.same_site_lax() {
-                Some("lax".to_owned())
-            } else if cookie.same_site_strict() {
-                Some("strict".to_owned())
-            } else {
-                None
-            };
+            let same_site = cookie.same_site().map(|same_site| match same_site {
+                cookie::SameSite::Lax => "lax".to_owned(),
+                cookie::SameSite::Strict => "strict".to_owned(),
+                cookie::SameSite::None => "none".to_owned(),
+            });
 
             let expires_at_ms = cookie
-                .expires()
+                .expires_datetime()
+                .map(std::time::SystemTime::from)
                 .and_then(|expires| expires.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|duration| duration.as_millis() as f64);
 
@@ -1271,8 +1274,8 @@ pub fn get_all_session_cookies(session_id: &str) -> Result<Vec<SessionCookieInfo
                 value: cookie.value().to_owned(),
                 domain: cookie.domain().map(ToOwned::to_owned),
                 path: cookie.path().map(ToOwned::to_owned),
-                secure: cookie.secure(),
-                http_only: cookie.http_only(),
+                secure: cookie.secure().unwrap_or(false),
+                http_only: cookie.http_only().unwrap_or(false),
                 same_site,
                 expires_at_ms,
             }
