@@ -1430,7 +1430,11 @@ pub fn set_session_cookies(
                     name
                 ));
             }
-            let nanos = (expires_at_ms * 1_000_000.0) as i128;
+            // f64 cannot hold epoch nanoseconds exactly, so scale the whole and fractional
+            // milliseconds separately to keep the exported timestamp to the millisecond.
+            let whole_ms = expires_at_ms.trunc();
+            let nanos =
+                (whole_ms as i128) * 1_000_000 + ((expires_at_ms - whole_ms) * 1_000_000.0) as i128;
             let expires =
                 cookie::time::OffsetDateTime::from_unix_timestamp_nanos(nanos).map_err(|_| {
                     anyhow!("Cookie \"{}\" has an out-of-range expiresAtMs value", name)
