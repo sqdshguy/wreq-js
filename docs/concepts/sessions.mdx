@@ -130,6 +130,29 @@ session.setCookie('auth_token', 'my-token', 'https://example.com');
 const resp = await session.fetch('https://example.com/api');
 ```
 
+### Saving and restoring a jar
+
+Use `setCookies(cookies, url)` to put an exported jar back, attributes and all — the way to persist
+a logged-in session between runs:
+
+```typescript
+const saved = JSON.stringify(session.getAllCookies());
+
+const restored = await createSession({ browser: 'chrome' });
+restored.setCookies(JSON.parse(saved), 'https://example.com');
+```
+
+The `url` scopes cookies that have no `domain` of their own. Those are host-only cookies, and the
+jar keeps their host internally rather than returning it, so the export cannot carry it. If the jar
+holds host-only cookies from more than one host, give each cookie its own `url` instead:
+
+```typescript
+restored.setCookies([
+  { name: 'session_id', value: 'abc123', url: 'https://example.com' },
+  { name: 'consent', value: 'yes', url: 'https://cdn.other.test' },
+]);
+```
+
 ### Clearing cookies
 
 Use `clearCookies()` to remove all cookies from the session:

@@ -149,6 +149,42 @@ session.setCookie('token', 'abc123', 'https://example.com');
   URL that determines the cookie's domain and path scope.
 </ParamField>
 
+#### session.setCookies(cookies, url?)
+
+Restore a batch of cookies into the session jar, keeping every attribute. Accepts the output of
+[`getAllCookies()`](#session-getallcookies) directly, so a jar can round-trip through JSON.
+
+```typescript
+// Export
+fs.writeFileSync('cookies.json', JSON.stringify(session.getAllCookies()));
+
+// Import, in another process
+const restored = await createSession({ browser: 'chrome' });
+restored.setCookies(JSON.parse(fs.readFileSync('cookies.json', 'utf8')), 'https://example.com');
+```
+
+<ParamField path="cookies" type="SessionCookieInit[]" required>
+  Cookies to store. Only `name` and `value` are required; `domain`, `path`, `secure`, `httpOnly`,
+  `sameSite`, and `expiresAtMs` are applied when present.
+</ParamField>
+
+<ParamField path="url" type="string | URL">
+  Origin used to scope host-only cookies — those without a `domain`. Required whenever the batch
+  contains one, unless the cookie carries its own `url`.
+</ParamField>
+
+<Note>
+  A cookie with a `domain` describes its own scope. A cookie without one is host-only, and the jar
+  keeps that host as an internal key it never returns, so it is missing from the export. `url`
+  supplies it — which means a jar holding host-only cookies from **several** hosts cannot be
+  restored from a single `url`: they would all land on that one host. Set `url` on the individual
+  cookie to place each one precisely.
+</Note>
+
+The batch is validated before anything is stored, so a rejected cookie leaves the jar untouched
+instead of applying half the restore. Cookies whose `expiresAtMs` is already in the past are
+dropped rather than stored, matching how the jar treats an expired `Set-Cookie`.
+
 #### session.clearCookies()
 
 Clear all cookies from the session cookie jar.
