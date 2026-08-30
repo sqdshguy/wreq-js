@@ -1313,6 +1313,141 @@ pub fn set_session_cookie(session_id: &str, name: &str, value: &str, url: &str) 
     Ok(())
 }
 
+/// Extract the cookie-scoping host from a URL.
+fn host_from_url(url: &str) -> Result<String> {
+    let uri: wreq::Uri = url
+        .parse()
+        .with_context(|| format!("Invalid URL: {}", url))?;
+    cookie_origin_uri(&uri)
+        .host()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| anyhow!("URL has no host: {}", url))
+}
+
+/// A cookie to restore into a session jar, mirroring `SessionCookieInfo`.
+#[derive(Debug, Clone)]
+pub struct SessionCookieInput {
+    pub name: String,
+    pub value: String,
+    pub domain: Option<String>,
+    pub path: Option<String>,
+    pub secure: bool,
+    pub http_only: bool,
+    pub same_site: Option<String>,
+    pub expires_at_ms: Option<f64>,
+    /// Origin for this cookie alone, overriding the batch URL. Only consulted for host-only
+    /// cookies (those without a `domain`).
+    pub url: Option<String>,
+}
+
+/// Restore a batch of cookies (as exported by `get_all_session_cookies`) into a session jar.
+///
+/// Cookies that carry a `domain` are self-describing and scope themselves. Host-only cookies have
+/// no `domain` attribute, and the jar keeps their origin host as an internal key it never hands
+/// back, so `default_url` has to say which host they belong to.
+///
+/// The whole batch is validated before anything is stored, so a rejected cookie leaves the jar
+/// untouched instead of applying a partial restore.
+pub fn set_session_cookies(
+    session_id: &str,
+    cookies: &[SessionCookieInput],
+    default_url: Option<&str>,
+) -> Result<()> {
+    let default_host = match default_url {
+        Some(url) => Some(host_from_url(url)?),
+        None => None,
+    };
+
+    let mut prepared = Vec::with_capacity(cookies.len());
+    for (index, input) in cookies.iter().enumerate() {
+        let name = input.name.trim();
+        if name.is_empty() {
+            return Err(anyhow!("Cookie at index {} has an empty name", index));
+        }
+
+        let domain = input
+            .domain
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty());
+        let host = match domain {
+            // A leading dot is legal in Set-Cookie but not in a URI authority.
+            Some(domain) => domain.trim_start_matches('.').to_owned(),
+            None => match input.url.as_deref() {
+                Some(url) => host_from_url(url)?,
+                None => default_host.clone().ok_or_else(|| {
+                    anyhow!(
+                        "Cookie \"{}\" has no domain. Host-only cookies lose their origin host \
+                         when exported, so pass a URL to scope them",
+                        name
+                    )
+                })?,
+            },
+        };
+
+        let path = input
+            .path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| path.starts_with('/'))
+            .unwrap_or("/");
+
+        // The jar drops a Secure cookie arriving from an insecure origin, and only a secure origin
+        // may overwrite a stored Secure cookie, so restore every cookie over https.
+        let uri: wreq::Uri = format!("https://{}{}", host, path)
+            .parse()
+            .with_context(|| format!("Cookie \"{}\" has an invalid domain or path", name))?;
+
+        let mut builder = cookie::Cookie::build((name.to_owned(), input.value.clone()))
+            .path(path.to_owned())
+            .secure(input.secure)
+            .http_only(input.http_only);
+
+        if let Some(domain) = domain {
+            builder = builder.domain(domain.to_owned());
+        }
+
+        if let Some(same_site) = input.same_site.as_deref() {
+            let same_site = match same_site.trim().to_ascii_lowercase().as_str() {
+                "lax" => cookie::SameSite::Lax,
+                "strict" => cookie::SameSite::Strict,
+                "none" => cookie::SameSite::None,
+                other => {
+                    return Err(anyhow!(
+                        "Cookie \"{}\" has an invalid sameSite value: {}",
+                        name,
+                        other
+                    ));
+                }
+            };
+            builder = builder.same_site(same_site);
+        }
+
+        if let Some(expires_at_ms) = input.expires_at_ms {
+            if !expires_at_ms.is_finite() {
+                return Err(anyhow!(
+                    "Cookie \"{}\" has a non-finite expiresAtMs value",
+                    name
+                ));
+            }
+            let nanos = (expires_at_ms * 1_000_000.0) as i128;
+            let expires =
+                cookie::time::OffsetDateTime::from_unix_timestamp_nanos(nanos).map_err(|_| {
+                    anyhow!("Cookie \"{}\" has an out-of-range expiresAtMs value", name)
+                })?;
+            builder = builder.expires(expires);
+        }
+
+        prepared.push((builder.build(), uri));
+    }
+
+    let jar = SESSION_MANAGER.jar_for(session_id)?;
+    for (cookie, uri) in prepared {
+        jar.add(cookie, uri);
+    }
+    Ok(())
+}
+
 /// Get the cookie jar for a session. Used by websocket to share cookies.
 pub(crate) fn get_session_cookie_jar(session_id: &str) -> Result<Arc<Jar>> {
     SESSION_MANAGER.jar_for(session_id)

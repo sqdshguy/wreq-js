@@ -32,6 +32,7 @@ import type {
   RequestEvent,
   RequestOptions,
   SessionCookie,
+  SessionCookieInit,
   SessionHandle,
   SessionWebSocketOptions,
   TlsVersion,
@@ -143,6 +144,7 @@ let nativeBinding: {
   getCookies: (sessionId: string, url: string) => Record<string, string>;
   getAllCookies: (sessionId: string) => SessionCookie[];
   setCookie: (sessionId: string, name: string, value: string, url: string) => void;
+  setCookies: (sessionId: string, cookies: SessionCookieInit[], url?: string) => void;
   createTransport: (options: NativeTransportOptions) => string;
   dropTransport: (transportId: string) => void;
   getOperatingSystems?: () => string[];
@@ -1196,6 +1198,48 @@ export class Session implements SessionHandle {
     this.ensureActive();
     try {
       nativeBinding.setCookie(this.id, name, value, String(url));
+    } catch (error) {
+      throw new RequestError(String(error));
+    }
+  }
+
+  /**
+   * Restore a batch of cookies into the session jar, keeping every attribute.
+   *
+   * Accepts the output of {@link Session.getAllCookies} directly, which makes a cookie jar
+   * round-trip through JSON possible.
+   *
+   * Cookies that carry a `domain` scope themselves. A cookie without one is host-only, and the
+   * jar keeps its origin host internally rather than returning it, so `url` supplies the host
+   * those cookies belong to. Passing `url` is therefore required whenever the batch contains a
+   * host-only cookie.
+   *
+   * Because that host is missing from the export, a jar holding host-only cookies from several
+   * hosts cannot be restored from `url` alone — every one of them lands on the host `url` names.
+   * Set `url` on the individual cookie to place it precisely.
+   *
+   * The batch is validated before anything is stored: if one cookie is rejected the jar is left
+   * untouched. Cookies whose `expiresAtMs` is already in the past are dropped rather than stored,
+   * matching how the jar treats an expired `Set-Cookie`.
+   *
+   * @param cookies - Cookies to store
+   * @param url - Origin used to scope host-only cookies that do not carry their own `url`
+   *
+   * @example
+   * ```typescript
+   * const saved = JSON.stringify(session.getAllCookies());
+   * // ...later, in another process
+   * const restored = await createSession({ browser: 'chrome' });
+   * restored.setCookies(JSON.parse(saved), 'https://example.com');
+   * ```
+   */
+  setCookies(cookies: SessionCookieInit[], url?: string | URL): void {
+    this.ensureActive();
+    if (!Array.isArray(cookies)) {
+      throw new RequestError("setCookies expects an array of cookies");
+    }
+    try {
+      nativeBinding.setCookies(this.id, cookies, url === undefined ? undefined : String(url));
     } catch (error) {
       throw new RequestError(String(error));
     }
@@ -3951,6 +3995,8 @@ export type {
   RequestEventType,
   RequestInit,
   RequestOptions,
+  SessionCookie,
+  SessionCookieInit,
   SessionHandle,
   SessionWebSocketOptions,
   TlsVersion,

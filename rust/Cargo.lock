@@ -1996,6 +1996,7 @@ dependencies = [
  "anyhow",
  "btls",
  "bytes",
+ "cookie",
  "dashmap",
  "futures-util",
  "moka",

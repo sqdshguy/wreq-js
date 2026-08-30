@@ -31,6 +31,36 @@ export interface SessionCookie {
 }
 
 /**
+ * A cookie accepted by {@link Session.setCookies}. Every {@link SessionCookie}
+ * returned by {@link Session.getAllCookies} is a valid input, so an exported jar
+ * can be handed straight back.
+ */
+export interface SessionCookieInit {
+  name: string;
+  value: string;
+  /**
+   * Domain the cookie is scoped to, with or without a leading dot. When omitted the
+   * cookie is host-only and {@link Session.setCookies} needs a URL to scope it.
+   */
+  domain?: string;
+  /** @default "/" */
+  path?: string;
+  /** @default false */
+  secure?: boolean;
+  /** @default false */
+  httpOnly?: boolean;
+  sameSite?: "lax" | "strict" | "none";
+  /** Absolute expiry in milliseconds since the epoch. Omit for a session cookie. */
+  expiresAtMs?: number;
+  /**
+   * Origin for this cookie alone, overriding the URL passed to {@link Session.setCookies}.
+   * Only consulted for host-only cookies (those without a `domain`), and the way to restore a
+   * jar holding host-only cookies from more than one host.
+   */
+  url?: string;
+}
+
+/**
  * A tuple of [name, value] pairs used for initializing headers.
  * Both name and value must be strings.
  *

@@ -5,11 +5,12 @@ mod websocket;
 
 use anyhow::anyhow;
 use client::{
-    HTTP_RUNTIME, RedirectMode, RequestEvent, RequestOptions, Response, TrustStoreMode,
-    clear_managed_session, create_managed_session, create_managed_transport, drop_body_stream,
-    drop_managed_session, drop_managed_transport, generate_session_id, get_all_session_cookies,
-    get_session_cookies, make_request, read_body_all as native_read_body_all,
-    read_body_chunk as native_read_body_chunk, set_session_cookie,
+    HTTP_RUNTIME, RedirectMode, RequestEvent, RequestOptions, Response, SessionCookieInput,
+    TrustStoreMode, clear_managed_session, create_managed_session, create_managed_transport,
+    drop_body_stream, drop_managed_session, drop_managed_transport, generate_session_id,
+    get_all_session_cookies, get_session_cookies, make_request,
+    read_body_all as native_read_body_all, read_body_chunk as native_read_body_chunk,
+    set_session_cookie, set_session_cookies,
 };
 use dashmap::DashMap;
 use futures_util::StreamExt;
@@ -1704,6 +1705,72 @@ fn set_cookie(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     Ok(cx.undefined())
 }
 
+fn set_cookies(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+    let session_id = cx.argument::<JsString>(0)?.value(&mut cx);
+    let entries = cx.argument::<JsArray>(1)?.to_vec(&mut cx)?;
+    let default_url = cx
+        .argument_opt(2)
+        .and_then(|v| v.downcast::<JsString, _>(&mut cx).ok())
+        .map(|v| v.value(&mut cx));
+
+    let mut cookies = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let obj = entry.downcast_or_throw::<JsObject, _>(&mut cx)?;
+
+        let name = obj.get::<JsString, _, _>(&mut cx, "name")?.value(&mut cx);
+        let value = obj.get::<JsString, _, _>(&mut cx, "value")?.value(&mut cx);
+        let domain = obj
+            .get_opt(&mut cx, "domain")?
+            .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
+            .map(|v| v.value(&mut cx));
+        let path = obj
+            .get_opt(&mut cx, "path")?
+            .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
+            .map(|v| v.value(&mut cx));
+        let secure = obj
+            .get_opt(&mut cx, "secure")?
+            .and_then(|v: Handle<JsValue>| v.downcast::<JsBoolean, _>(&mut cx).ok())
+            .map(|v| v.value(&mut cx))
+            .unwrap_or(false);
+        let http_only = obj
+            .get_opt(&mut cx, "httpOnly")?
+            .and_then(|v: Handle<JsValue>| v.downcast::<JsBoolean, _>(&mut cx).ok())
+            .map(|v| v.value(&mut cx))
+            .unwrap_or(false);
+        let same_site = obj
+            .get_opt(&mut cx, "sameSite")?
+            .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
+            .map(|v| v.value(&mut cx));
+        let expires_at_ms = obj
+            .get_opt(&mut cx, "expiresAtMs")?
+            .and_then(|v: Handle<JsValue>| v.downcast::<JsNumber, _>(&mut cx).ok())
+            .map(|v| v.value(&mut cx));
+        let url = obj
+            .get_opt(&mut cx, "url")?
+            .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
+            .map(|v| v.value(&mut cx));
+
+        cookies.push(SessionCookieInput {
+            name,
+            value,
+            domain,
+            path,
+            secure,
+            http_only,
+            same_site,
+            expires_at_ms,
+            url,
+        });
+    }
+
+    if let Err(e) = set_session_cookies(&session_id, &cookies, default_url.as_deref()) {
+        let msg = format!("{:#}", e);
+        return cx.throw_error(msg);
+    }
+
+    Ok(cx.undefined())
+}
+
 // Module initialization
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
@@ -1721,6 +1788,7 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("getCookies", get_cookies)?;
     cx.export_function("getAllCookies", get_all_cookies)?;
     cx.export_function("setCookie", set_cookie)?;
+    cx.export_function("setCookies", set_cookies)?;
     cx.export_function("createTransport", create_transport)?;
     cx.export_function("dropTransport", drop_transport)?;
     cx.export_function("websocketConnect", websocket_connect)?;
