@@ -18,6 +18,7 @@ use uuid::Uuid;
 use wreq::cookie::Jar;
 use wreq::header::OrigHeaderMap;
 use wreq::tls::TlsInfo;
+use wreq::tls::session::{Key, TlsSession, TlsSessionCache};
 use wreq::tls::trust::CertStore;
 use wreq::{Client as HttpClient, Method, Proxy, redirect};
 
@@ -484,6 +485,22 @@ fn next_body_handle() -> u64 {
 // system store into a BoringSSL X509_STORE, which costs milliseconds of CPU; the
 // result is immutable and cheap to clone (Arc), so it is built once per process.
 static CERT_STORES: LazyLock<DashMap<TrustStoreMode, CertStore>> = LazyLock::new(DashMap::new);
+
+// Isolated `fetch()` calls share one cached ephemeral client for speed, but a client's
+// TLS session cache would then carry session tickets from one call to the next, and the
+// server sees the second connection resume the first, linking two requests that are meant
+// to be independent. This cache stores nothing and returns nothing, so those connections
+// never resume. It leaves `pre_shared_key` (and therefore the ClientHello) untouched: a
+// browser opening its first connection has no session to resume either. Sessions and
+// explicit transports keep wreq's real LRU cache, where resumption is wanted.
+struct NoResumptionSessionCache;
+
+impl TlsSessionCache for NoResumptionSessionCache {
+    fn put(&self, _key: Key, _session: TlsSession) {}
+    fn pop(&self, _key: &Key) -> Option<TlsSession> {
+        None
+    }
+}
 
 fn build_cert_store(mode: TrustStoreMode) -> Result<CertStore> {
     if let Some(store) = CERT_STORES.get(&mode) {
@@ -1177,7 +1194,9 @@ fn build_ephemeral_client(config: &SessionConfig) -> Result<ResolvedClient> {
 
     let mut client_builder = HttpClient::builder()
         .emulation(emulation)
-        .pool_max_idle_per_host(0);
+        .pool_max_idle_per_host(0)
+        // Isolated fetches must not resume each other's TLS sessions (see the cache above).
+        .tls_session_cache(NoResumptionSessionCache);
 
     if let Some(proxy_url) = config.proxy.as_deref() {
         let proxy = Proxy::all(proxy_url).context("Failed to create proxy")?;
