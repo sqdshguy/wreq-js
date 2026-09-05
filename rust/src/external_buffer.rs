@@ -1,8 +1,8 @@
 //! Hand large response bodies to JS without copying them.
 //!
 //! `napi_create_external_buffer` wraps a Rust allocation in a `Buffer` and frees it
-//! through a finalizer when the JS object is collected. That skips the zero-fill and
-//! memcpy of `napi_create_buffer_copy`. Peak memory still depends on allocation
+//! through a finalizer when the JS object is collected. That skips copying the
+//! body into a runtime-owned buffer. Peak memory still depends on allocation
 //! sizes, request rate, and the runtime's garbage collection behavior.
 //!
 //! Runtimes built with V8's sandbox (Electron) refuse external buffers with
@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use bytes::Bytes;
 use neon::prelude::*;
 use neon::sys::bindings::{Env as RawEnv, Value as RawValue};
+use neon::types::buffer::TypedArray;
 
 /// Smaller buffers are copied: equal-rate Node benchmarks showed lower resident
 /// memory at 64 KiB with negligible throughput differences. Keep larger buffers
@@ -100,7 +101,9 @@ unsafe fn create_external(env: RawEnv, data: Vec<u8>) -> Created {
 
     // SAFETY: `env` is valid for this thread; on failure the runtime has not taken
     // ownership, so the Box is reclaimed below.
-    let status = unsafe { (fns.create_external_buffer)(env, len, ptr, Some(finalize), hint.cast(), &mut result) };
+    let status = unsafe {
+        (fns.create_external_buffer)(env, len, ptr, Some(finalize), hint.cast(), &mut result)
+    };
 
     if status != NAPI_OK {
         let data = *unsafe { Box::from_raw(hint) };
@@ -123,7 +126,10 @@ pub fn init<'cx, C: Context<'cx>>(cx: &mut C) {
     }
     let env = cx.to_raw();
     // SAFETY: called on the JS thread during module init with a valid env.
-    let allowed = matches!(unsafe { create_external(env, vec![0u8]) }, Created::Buffer(_));
+    let allowed = matches!(
+        unsafe { create_external(env, vec![0u8]) },
+        Created::Buffer(_)
+    );
     ALLOWED.store(allowed, Ordering::Relaxed);
 }
 
@@ -136,9 +142,12 @@ pub fn set_enabled(enabled: bool) {
 
 /// Convert body bytes to a JS `Buffer`: external (zero-copy when the `Bytes` uniquely
 /// owns its allocation) above the threshold, copied otherwise.
-pub fn bytes_to_js_buffer<'cx, C: Context<'cx>>(cx: &mut C, bytes: Bytes) -> JsResult<'cx, JsBuffer> {
+pub fn bytes_to_js_buffer<'cx, C: Context<'cx>>(
+    cx: &mut C,
+    bytes: Bytes,
+) -> JsResult<'cx, JsBuffer> {
     if bytes.len() < EXTERNAL_BUFFER_MIN || !ALLOWED.load(Ordering::Relaxed) {
-        return JsBuffer::from_slice(cx, &bytes);
+        return copy_buffer(cx, &bytes);
     }
 
     let owned: Vec<u8> = bytes.into();
@@ -149,10 +158,18 @@ pub fn bytes_to_js_buffer<'cx, C: Context<'cx>>(cx: &mut C, bytes: Bytes) -> JsR
         Created::Refused(data) => {
             // The runtime changed its mind (or the probe was wrong); copy from now on.
             ALLOWED.store(false, Ordering::Relaxed);
-            JsBuffer::from_slice(cx, &data)
+            copy_buffer(cx, &data)
         }
-        Created::Failed(status) => {
-            cx.throw_error(format!("napi_create_external_buffer failed with status {status}"))
-        }
+        Created::Failed(status) => cx.throw_error(format!(
+            "napi_create_external_buffer failed with status {status}"
+        )),
     }
+}
+
+fn copy_buffer<'cx, C: Context<'cx>>(cx: &mut C, bytes: &[u8]) -> JsResult<'cx, JsBuffer> {
+    // SAFETY: every byte is initialized immediately, before the buffer is exposed
+    // to JavaScript. Avoid zero-filling memory that the copy will overwrite.
+    let mut buffer = unsafe { JsBuffer::uninitialized(cx, bytes.len())? };
+    buffer.as_mut_slice(cx).copy_from_slice(bytes);
+    Ok(buffer)
 }
