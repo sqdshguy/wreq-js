@@ -4,9 +4,11 @@ import { fetch as wreqFetch } from "../../wreq-js.js";
 import { httpUrl, isLocalHttpBase } from "../helpers/http.js";
 
 // Bodies without a Content-Length (chunked transfer, or anything compressed, since
-// decoding drops the header) are buffered natively when they arrive quickly, so they
-// take the same inline path as small known-length bodies. `contentLength` is only
-// non-null when that happened, which makes the path observable from JS.
+// decoding drops the header) are inlined natively when they have already fully
+// arrived by the time the response is handed to JS, so they take the same inline
+// path as small known-length bodies. Nothing waits on the network for this.
+// `contentLength` is only non-null when that happened, which makes the path
+// observable from JS.
 describe("inline body buffering for unknown-length responses", () => {
   test("small compressed responses are inlined with their decoded length", { skip: !isLocalHttpBase }, async () => {
     const response = await wreqFetch(httpUrl("/gzip"), { browser: "chrome_142", timeout: 10_000 });
@@ -16,8 +18,8 @@ describe("inline body buffering for unknown-length responses", () => {
     assert.strictEqual(response.contentLength, JSON.stringify(body).length, "decoded length should be reported");
   });
 
-  test("a chunked body that completes quickly is inlined", { skip: !isLocalHttpBase }, async () => {
-    const response = await wreqFetch(httpUrl("/stream/chunks?n=1&size=512"), {
+  test("a chunked body that has fully arrived is inlined", { skip: !isLocalHttpBase }, async () => {
+    const response = await wreqFetch(httpUrl("/chunked?size=512"), {
       browser: "chrome_142",
       timeout: 10_000,
     });
@@ -58,7 +60,7 @@ describe("inline body buffering for unknown-length responses", () => {
     assert.strictEqual(last?.[last.byteLength - 1], 2, "the live tail follows the prefix");
   });
 
-  test("text/event-stream responses are never held back", { skip: !isLocalHttpBase }, async () => {
+  test("text/event-stream responses deliver their first event immediately", { skip: !isLocalHttpBase }, async () => {
     const started = performance.now();
     const response = await wreqFetch(httpUrl("/sse"), { browser: "chrome_142", timeout: 10_000 });
 

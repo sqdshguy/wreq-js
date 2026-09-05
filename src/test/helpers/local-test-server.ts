@@ -337,9 +337,21 @@ export async function startLocalTestServer(): Promise<LocalTestServer> {
       return;
     }
 
+    if (path === "/chunked") {
+      // Chunked transfer with no Content-Length. end(data) corks the socket so the
+      // data chunk and the terminating chunk leave in a single flush, the way a
+      // server that flushes properly (or any HTTP/2 END_STREAM frame) behaves.
+      // write(data) followed by end() would send the terminator separately.
+      const size = Math.max(1, Math.min(Number(url.searchParams.get("size") ?? "512"), 65536));
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.end(Buffer.alloc(size, 7));
+      return;
+    }
+
     if (path === "/stream/slow") {
-      // First chunk immediately, second after a pause long enough to outlast the
-      // native inline window, so the body must be delivered as a stream.
+      // First chunk immediately, second after a pause, so the body cannot be
+      // complete when the response is handed to JS and must be streamed.
       const gapMs = Math.max(1, Math.min(Number(url.searchParams.get("gap") ?? "200"), 5000));
       res.statusCode = 200;
       res.setHeader("Content-Type", "application/octet-stream");
