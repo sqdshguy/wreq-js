@@ -337,6 +337,30 @@ export async function startLocalTestServer(): Promise<LocalTestServer> {
       return;
     }
 
+    if (path === "/stream/slow") {
+      // First chunk immediately, second after a pause long enough to outlast the
+      // native inline window, so the body must be delivered as a stream.
+      const gapMs = Math.max(1, Math.min(Number(url.searchParams.get("gap") ?? "200"), 5000));
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.write(Buffer.alloc(256, 1));
+      await delay(gapMs);
+      res.write(Buffer.alloc(256, 2));
+      res.end();
+      return;
+    }
+
+    if (path === "/sse") {
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.write("data: first\n\n");
+      await delay(200);
+      res.write("data: second\n\n");
+      res.end();
+      return;
+    }
+
     if (path === "/cookies") {
       return json(res, { cookies: parseCookies(req.headers.cookie) });
     }
