@@ -1198,12 +1198,36 @@ export class Response {
   }
 }
 
+// A Transport owns a native client and its connection pool until dropTransport().
+// close() drops it explicitly; this finalizer drops it for Transport objects that were
+// never closed, the same way sessions are handled above.
+type TransportNativeState = { id: string; released: boolean };
+
+const transportFinalizer =
+  typeof FinalizationRegistry === "function"
+    ? new FinalizationRegistry<TransportNativeState>((state: TransportNativeState) => {
+        if (state.released) {
+          return;
+        }
+
+        state.released = true;
+        try {
+          nativeBinding.dropTransport(state.id);
+        } catch {
+          // Best-effort cleanup; ignore binding-level failures.
+        }
+      })
+    : undefined;
+
 export class Transport {
   readonly id: string;
   private disposed = false;
+  private readonly nativeState: TransportNativeState;
 
   constructor(id: string) {
     this.id = id;
+    this.nativeState = { id, released: false };
+    transportFinalizer?.register(this, this.nativeState, this.nativeState);
   }
 
   get closed(): boolean {
@@ -1216,6 +1240,9 @@ export class Transport {
     }
 
     this.disposed = true;
+    // Explicit close owns the cleanup from here; the finalizer must not repeat it.
+    this.nativeState.released = true;
+    transportFinalizer?.unregister(this.nativeState);
 
     try {
       nativeBinding.dropTransport(this.id);
