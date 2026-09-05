@@ -349,6 +349,20 @@ export async function startLocalTestServer(): Promise<LocalTestServer> {
       return;
     }
 
+    if (path === "/chunked/many") {
+      // Many small chunked frames written back to back with no delay, so several of
+      // them are typically in flight or buffered by the time the client reads.
+      const count = Math.max(1, Math.min(Number(url.searchParams.get("n") ?? "64"), 4096));
+      const size = Math.max(1, Math.min(Number(url.searchParams.get("size") ?? "1024"), 65536));
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/octet-stream");
+      for (let i = 0; i < count; i += 1) {
+        res.write(Buffer.alloc(size, i & 0xff));
+      }
+      res.end();
+      return;
+    }
+
     if (path === "/stream/slow") {
       // First chunk immediately, second after a pause, so the body cannot be
       // complete when the response is handed to JS and must be streamed.

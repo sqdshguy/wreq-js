@@ -12,7 +12,7 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore, mpsc};
 use uuid::Uuid;
 use wreq::cookie::Jar;
 use wreq::header::OrigHeaderMap;
@@ -392,7 +392,36 @@ struct BodyEventState {
     url: String,
 }
 
-static BODY_STREAMS: LazyLock<Cache<u64, Arc<Mutex<ResponseBodyStream>>>> = LazyLock::new(|| {
+// A streamed body is pulled off the connection by a pump task into a bounded buffer,
+// the way Node's Readable keeps reading up to its highWaterMark and Bun's fetch fills
+// its native response buffer between JS reads. hyper's body channel holds a single
+// frame and only reads more once it is polled, so without the pump each
+// readBodyChunk() call could return at most one frame, one FFI round trip per frame.
+const STREAM_BUFFER_BYTES: usize = 256 * 1024;
+
+// Upper bound on how many buffered frames one readBodyChunk() call merges.
+const STREAM_CHUNK_BUDGET: usize = 256 * 1024;
+
+struct BodyStreamState {
+    frames: mpsc::UnboundedReceiver<wreq::Result<Bytes>>,
+    /// Bytes the pump may still buffer. The pump takes permits per frame, the reader
+    /// returns them; dropping the state closes it and stops the pump.
+    capacity: Arc<Semaphore>,
+    /// An error taken off the buffer while coalescing, returned by the next read.
+    pending_error: Option<wreq::Error>,
+}
+
+impl Drop for BodyStreamState {
+    fn drop(&mut self) {
+        self.capacity.close();
+    }
+}
+
+fn buffer_permits(len: usize) -> u32 {
+    len.min(STREAM_BUFFER_BYTES) as u32
+}
+
+static BODY_STREAMS: LazyLock<Cache<u64, Arc<Mutex<BodyStreamState>>>> = LazyLock::new(|| {
     Cache::builder()
         .time_to_idle(Duration::from_secs(300))
         .build()
@@ -478,10 +507,63 @@ fn build_cert_store_uncached(mode: TrustStoreMode) -> Result<CertStore> {
     }
 }
 
-pub fn store_body_stream(stream: ResponseBodyStream) -> u64 {
+pub fn store_body_stream(mut stream: ResponseBodyStream) -> u64 {
     let handle = next_body_handle();
-    BODY_STREAMS.insert(handle, Arc::new(Mutex::new(stream)));
+    let (tx, rx) = mpsc::unbounded_channel();
+    let capacity = Arc::new(Semaphore::new(STREAM_BUFFER_BYTES));
+
+    let pump_capacity = capacity.clone();
+    HTTP_RUNTIME.spawn(async move {
+        loop {
+            let item = tokio::select! {
+                // The reader side is gone (handle dropped, cancelled, or evicted).
+                _ = tx.closed() => break,
+                item = stream.next() => match item {
+                    Some(item) => item,
+                    None => break,
+                },
+            };
+
+            let is_err = item.is_err();
+            if let Ok(bytes) = &item {
+                match pump_capacity.acquire_many(buffer_permits(bytes.len())).await {
+                    Ok(permits) => permits.forget(),
+                    Err(_) => break,
+                }
+            }
+            if tx.send(item).is_err() || is_err {
+                break;
+            }
+        }
+    });
+
+    BODY_STREAMS.insert(
+        handle,
+        Arc::new(Mutex::new(BodyStreamState {
+            frames: rx,
+            capacity,
+            pending_error: None,
+        })),
+    );
     handle
+}
+
+fn finish_body_stream_error(handle: u64, err: wreq::Error) -> anyhow::Error {
+    BODY_STREAMS.invalidate(&handle);
+    if let Some((_, state)) = BODY_EVENT_STATES.remove(&handle) {
+        (state.sink)(RequestEvent::Error {
+            timestamp_ms: 0,
+            message: format!("{:#}", err),
+        });
+    }
+    err.into()
+}
+
+fn finish_body_stream_end(handle: u64) {
+    BODY_STREAMS.invalidate(&handle);
+    if let Some((_, state)) = BODY_EVENT_STATES.remove(&handle) {
+        emit_body_complete(&state);
+    }
 }
 
 pub async fn read_body_chunk(handle: u64) -> Result<Option<Bytes>> {
@@ -490,33 +572,46 @@ pub async fn read_body_chunk(handle: u64) -> Result<Option<Bytes>> {
         .ok_or_else(|| anyhow!("Body handle {} not found", handle))?;
 
     let mut guard = stream.lock().await;
-    let next = guard.next().await;
 
-    match next {
-        Some(Ok(bytes)) => {
-            if let Some(state) = BODY_EVENT_STATES.get(&handle) {
-                emit_body_progress(&state, bytes.len() as u64);
-            }
-            Ok(Some(bytes))
-        }
-        Some(Err(err)) => {
-            BODY_STREAMS.invalidate(&handle);
-            if let Some((_, state)) = BODY_EVENT_STATES.remove(&handle) {
-                (state.sink)(RequestEvent::Error {
-                    timestamp_ms: 0,
-                    message: format!("{:#}", err),
-                });
-            }
-            Err(err.into())
-        }
+    if let Some(err) = guard.pending_error.take() {
+        return Err(finish_body_stream_error(handle, err));
+    }
+
+    // Wait for one frame; this is the only point that blocks on the network.
+    let first = match guard.frames.recv().await {
+        Some(Ok(bytes)) => bytes,
+        Some(Err(err)) => return Err(finish_body_stream_error(handle, err)),
         None => {
-            BODY_STREAMS.invalidate(&handle);
-            if let Some((_, state)) = BODY_EVENT_STATES.remove(&handle) {
-                emit_body_complete(&state);
+            finish_body_stream_end(handle);
+            return Ok(None);
+        }
+    };
+    guard.capacity.add_permits(buffer_permits(first.len()) as usize);
+
+    // Then merge whatever the pump has already buffered, so a body that arrives in
+    // many small frames does not cost one FFI round trip per frame.
+    let mut total_len = first.len();
+    let mut chunks = vec![first];
+    while total_len < STREAM_CHUNK_BUDGET {
+        match guard.frames.try_recv() {
+            Ok(Ok(bytes)) => {
+                guard.capacity.add_permits(buffer_permits(bytes.len()) as usize);
+                total_len += bytes.len();
+                chunks.push(bytes);
             }
-            Ok(None)
+            Ok(Err(err)) => {
+                guard.pending_error = Some(err);
+                break;
+            }
+            Err(_) => break, // empty for now, or ended; the next read reports it
         }
     }
+
+    let bytes = concat_chunks(chunks, total_len);
+    if let Some(state) = BODY_EVENT_STATES.get(&handle) {
+        emit_body_progress(&state, bytes.len() as u64);
+    }
+    Ok(Some(bytes))
 }
 
 /// Read entire body into a single buffer. More efficient than streaming for small bodies.
@@ -529,8 +624,16 @@ pub async fn read_body_all(handle: u64) -> Result<Bytes> {
     let mut chunks: Vec<Bytes> = Vec::new();
     let mut total_len = 0usize;
 
-    while let Some(result) = guard.next().await {
-        let bytes = result?;
+    if let Some(err) = guard.pending_error.take() {
+        return Err(finish_body_stream_error(handle, err));
+    }
+
+    while let Some(result) = guard.frames.recv().await {
+        let bytes = match result {
+            Ok(bytes) => bytes,
+            Err(err) => return Err(finish_body_stream_error(handle, err)),
+        };
+        guard.capacity.add_permits(buffer_permits(bytes.len()) as usize);
         total_len += bytes.len();
         if let Some(state) = BODY_EVENT_STATES.get(&handle) {
             emit_body_progress(&state, bytes.len() as u64);
@@ -542,20 +645,7 @@ pub async fn read_body_all(handle: u64) -> Result<Bytes> {
         emit_body_complete(&state);
     }
 
-    // Fast path: single chunk or empty
-    if chunks.is_empty() {
-        return Ok(Bytes::new());
-    }
-    if chunks.len() == 1 {
-        return Ok(chunks.into_iter().next().unwrap());
-    }
-
-    // Multiple chunks: consolidate
-    let mut buf = Vec::with_capacity(total_len);
-    for chunk in chunks {
-        buf.extend_from_slice(&chunk);
-    }
-    Ok(Bytes::from(buf))
+    Ok(concat_chunks(chunks, total_len))
 }
 
 pub fn drop_body_stream(handle: u64) {
