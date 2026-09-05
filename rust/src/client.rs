@@ -345,7 +345,22 @@ fn next_body_handle() -> u64 {
     NEXT_BODY_HANDLE.fetch_add(1, Ordering::Relaxed)
 }
 
+// Built trust stores, one per mode. Building one parses ~150 Mozilla roots plus the
+// system store into a BoringSSL X509_STORE, which costs milliseconds of CPU; the
+// result is immutable and cheap to clone (Arc), so it is built once per process.
+static CERT_STORES: LazyLock<DashMap<TrustStoreMode, CertStore>> = LazyLock::new(DashMap::new);
+
 fn build_cert_store(mode: TrustStoreMode) -> Result<CertStore> {
+    if let Some(store) = CERT_STORES.get(&mode) {
+        return Ok(store.clone());
+    }
+
+    let store = build_cert_store_uncached(mode)?;
+    CERT_STORES.insert(mode, store.clone());
+    Ok(store)
+}
+
+fn build_cert_store_uncached(mode: TrustStoreMode) -> Result<CertStore> {
     match mode {
         TrustStoreMode::Mozilla => CertStore::builder()
             .add_der_certs(webpki_root_certs::TLS_SERVER_ROOT_CERTS)
