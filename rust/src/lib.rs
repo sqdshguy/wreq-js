@@ -238,191 +238,6 @@ fn parse_resolve_opt(
 }
 
 // Convert JS object to RequestOptions
-fn js_object_to_request_options(
-    cx: &mut FunctionContext,
-    obj: Handle<JsObject>,
-    event_sink: Option<client::RequestEventSink>,
-) -> NeonResult<RequestOptions> {
-    // Get URL (required)
-    let url: Handle<JsString> = obj.get(cx, "url")?;
-    let url = url.value(cx);
-
-    // Get browser/os/emulation mode as resolved by JS.
-    let browser_str = obj
-        .get_opt(cx, "browser")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(cx).ok())
-        .map(|v| v.value(cx));
-
-    let browser = browser_str.as_deref().map(parse_emulation);
-    let os_str = obj
-        .get_opt(cx, "os")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(cx).ok())
-        .map(|v| v.value(cx));
-    let browser_os = os_str.as_deref().map(parse_emulation_os);
-    let emulation_json = obj
-        .get_opt(cx, "emulationJson")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(cx).ok())
-        .map(|v| Arc::<str>::from(v.value(cx)));
-
-    // Get method (optional, defaults to GET)
-    let method = obj
-        .get_opt(cx, "method")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(cx).ok())
-        .map(|v| v.value(cx))
-        .unwrap_or_else(|| "GET".to_string());
-
-    // Get headers (optional)
-    let headers = if let Ok(Some(headers_val)) = obj.get_opt(cx, "headers") {
-        parse_headers_from_value(cx, headers_val)?
-    } else {
-        Vec::new()
-    };
-
-    // Get body (optional)
-    let body = if let Some(body_value) = obj.get_opt::<JsValue, _, _>(cx, "body")? {
-        if body_value.is_a::<JsUndefined, _>(cx) || body_value.is_a::<JsNull, _>(cx) {
-            None
-        } else if let Ok(buffer) = body_value.downcast::<JsBuffer, _>(cx) {
-            Some(buffer.as_slice(cx).to_vec())
-        } else if let Ok(js_str) = body_value.downcast::<JsString, _>(cx) {
-            Some(js_str.value(cx).into_bytes())
-        } else {
-            return cx.throw_type_error("body must be a string or Buffer");
-        }
-    } else {
-        None
-    };
-
-    // Get proxy (optional)
-    let proxy = obj
-        .get_opt(cx, "proxy")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(cx).ok())
-        .map(|v| Arc::<str>::from(v.value(cx)));
-
-    // Get timeout (optional, defaults to 30000ms)
-    let timeout = obj
-        .get_opt(cx, "timeout")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsNumber, _>(cx).ok())
-        .map(|v| v.value(cx) as u64)
-        .unwrap_or(30000);
-
-    // Get redirect policy (optional, defaults to follow)
-    let redirect = obj
-        .get_opt(cx, "redirect")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(cx).ok())
-        .map(|v| v.value(cx))
-        .unwrap_or_else(|| "follow".to_string());
-
-    let redirect = match redirect.as_str() {
-        "follow" => RedirectMode::Follow,
-        "manual" => RedirectMode::Manual,
-        "error" => RedirectMode::Error,
-        other => return cx.throw_type_error(format!("Unsupported redirect mode: {}", other)),
-    };
-
-    // Get sessionId (optional)
-    let session_id = obj
-        .get_opt(cx, "sessionId")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(cx).ok())
-        .map(|v| v.value(cx))
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(generate_session_id);
-
-    let ephemeral = obj
-        .get_opt(cx, "ephemeral")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsBoolean, _>(cx).ok())
-        .map(|v| v.value(cx))
-        .unwrap_or(false);
-
-    let disable_default_headers = obj
-        .get_opt(cx, "disableDefaultHeaders")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsBoolean, _>(cx).ok())
-        .map(|v| v.value(cx))
-        .unwrap_or(false);
-
-    let insecure = obj
-        .get_opt(cx, "insecure")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsBoolean, _>(cx).ok())
-        .map(|v| v.value(cx))
-        .unwrap_or(false);
-
-    let trust_store = obj
-        .get_opt(cx, "trustStore")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(cx).ok())
-        .map(|v| parse_trust_store_mode(&v.value(cx)))
-        .unwrap_or_default();
-
-    let compress = obj
-        .get_opt(cx, "compress")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsBoolean, _>(cx).ok())
-        .map(|v| v.value(cx))
-        .unwrap_or(true);
-
-    let transport_id = obj
-        .get_opt(cx, "transportId")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(cx).ok())
-        .map(|v| v.value(cx))
-        .filter(|v| !v.trim().is_empty());
-
-    let capture_diagnostics = obj
-        .get_opt(cx, "captureDiagnostics")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsBoolean, _>(cx).ok())
-        .map(|v| v.value(cx))
-        .unwrap_or(false);
-
-    let pool_idle_timeout = obj
-        .get_opt(cx, "poolIdleTimeout")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsNumber, _>(cx).ok())
-        .map(|v| v.value(cx) as u64);
-
-    let pool_max_idle_per_host = obj
-        .get_opt(cx, "poolMaxIdlePerHost")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsNumber, _>(cx).ok())
-        .map(|v| v.value(cx) as usize);
-
-    let pool_max_size = obj
-        .get_opt(cx, "poolMaxSize")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsNumber, _>(cx).ok())
-        .map(|v| v.value(cx) as u32);
-
-    let connect_timeout = obj
-        .get_opt(cx, "connectTimeout")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsNumber, _>(cx).ok())
-        .map(|v| v.value(cx) as u64);
-
-    let read_timeout = obj
-        .get_opt(cx, "readTimeout")?
-        .and_then(|v: Handle<JsValue>| v.downcast::<JsNumber, _>(cx).ok())
-        .map(|v| v.value(cx) as u64);
-
-    Ok(RequestOptions {
-        url,
-        browser,
-        browser_os,
-        emulation_json,
-        headers,
-        method,
-        body,
-        proxy,
-        timeout,
-        redirect,
-        session_id,
-        ephemeral,
-        disable_default_headers,
-        insecure,
-        trust_store,
-        transport_id,
-        pool_idle_timeout,
-        pool_max_idle_per_host,
-        pool_max_size,
-        connect_timeout,
-        read_timeout,
-        compress,
-        capture_diagnostics,
-        event_sink,
-    })
-}
-
 // Convert Response to JS object
 fn response_to_js_object<'a, C: Context<'a>>(
     cx: &mut C,
@@ -438,61 +253,44 @@ fn response_to_js_object<'a, C: Context<'a>>(
     let url = cx.string(&response.url);
     obj.set(cx, "url", url)?;
 
-    // Headers
-    let headers_arr = cx.empty_array();
+    // Headers as a flat [name, value, name, value, ...] array, the shape Node's own
+    // HTTP parser hands up as rawHeaders: two element stores per header instead of an
+    // array allocation plus three stores.
+    let headers_arr = JsArray::new(cx, response.headers.len() * 2);
     for (i, (key, value)) in response.headers.iter().enumerate() {
-        let entry = cx.empty_array();
         let key_str = cx.string(key);
         let value_str = cx.string(value);
-        entry.set(cx, 0, key_str)?;
-        entry.set(cx, 1, value_str)?;
-        headers_arr.set(cx, i as u32, entry)?;
+        headers_arr.set(cx, (i * 2) as u32, key_str)?;
+        headers_arr.set(cx, (i * 2 + 1) as u32, value_str)?;
     }
     obj.set(cx, "headers", headers_arr)?;
 
-    // Cookies (as array of [key, value] tuples)
-    let cookies_arr = cx.empty_array();
-    for (i, (key, value)) in response.cookies.iter().enumerate() {
-        let entry = cx.empty_array();
-        let key_str = cx.string(key);
-        let value_str = cx.string(value);
-        entry.set(cx, 0, key_str)?;
-        entry.set(cx, 1, value_str)?;
-        cookies_arr.set(cx, i as u32, entry)?;
-    }
-    obj.set(cx, "cookies", cookies_arr)?;
-
-    // Inline body bytes for small responses (avoids a second native round-trip)
-    match response.body_bytes {
-        Some(bytes) => {
-            let buffer = JsBuffer::from_slice(cx, &bytes)?;
-            obj.set(cx, "bodyBytes", buffer)?;
+    // Cookies, same flat shape; omitted entirely when the response set none.
+    if !response.cookies.is_empty() {
+        let cookies_arr = JsArray::new(cx, response.cookies.len() * 2);
+        for (i, (key, value)) in response.cookies.iter().enumerate() {
+            let key_str = cx.string(key);
+            let value_str = cx.string(value);
+            cookies_arr.set(cx, (i * 2) as u32, key_str)?;
+            cookies_arr.set(cx, (i * 2 + 1) as u32, value_str)?;
         }
-        None => {
-            let null_value = cx.null();
-            obj.set(cx, "bodyBytes", null_value)?;
-        }
+        obj.set(cx, "cookies", cookies_arr)?;
     }
 
-    // Body handle for streaming
-    match response.body_handle {
-        Some(handle) => {
-            let handle_num = cx.number(handle as f64);
-            obj.set(cx, "bodyHandle", handle_num)?;
-        }
-        None => {
-            let null_value = cx.null();
-            obj.set(cx, "bodyHandle", null_value)?;
-        }
+    // Absent fields are left absent rather than set to null; JS reads them with `??`.
+    if let Some(bytes) = response.body_bytes {
+        let buffer = JsBuffer::from_slice(cx, &bytes)?;
+        obj.set(cx, "bodyBytes", buffer)?;
     }
 
-    // Content-Length hint (if known)
+    if let Some(handle) = response.body_handle {
+        let handle_num = cx.number(handle as f64);
+        obj.set(cx, "bodyHandle", handle_num)?;
+    }
+
     if let Some(len) = response.content_length {
         let len_num = cx.number(len as f64);
         obj.set(cx, "contentLength", len_num)?;
-    } else {
-        let null_value = cx.null();
-        obj.set(cx, "contentLength", null_value)?;
     }
 
     // Diagnostics payload (if present)
@@ -525,9 +323,6 @@ fn response_to_js_object<'a, C: Context<'a>>(
             diagnostics_obj.set(cx, "tlsPeerCertificateChainLength", value)?;
         }
         obj.set(cx, "diagnostics", diagnostics_obj)?;
-    } else {
-        let null_value = cx.null();
-        obj.set(cx, "diagnostics", null_value)?;
     }
 
     Ok(obj)
@@ -652,36 +447,171 @@ fn request_event_to_js_object<'a, C: Context<'a>>(
 }
 
 // Main request function exported to Node.js
+// Bit flags for the positional `request()` call. Mirrors how Node's own bindings pass
+// option sets (fs open flags) rather than an object the addon has to probe field by field.
+const FLAG_EPHEMERAL: u32 = 1;
+const FLAG_DISABLE_DEFAULT_HEADERS: u32 = 1 << 1;
+const FLAG_INSECURE: u32 = 1 << 2;
+const FLAG_NO_COMPRESS: u32 = 1 << 3;
+const FLAG_CAPTURE_DIAGNOSTICS: u32 = 1 << 4;
+const FLAG_CANCELLABLE: u32 = 1 << 5;
+const FLAG_REDIRECT_MANUAL: u32 = 1 << 6;
+const FLAG_REDIRECT_ERROR: u32 = 1 << 7;
+
+type RequestArgs<'cx> = (
+    String,                      // url
+    String,                      // method
+    String,                      // sessionId
+    f64,                         // requestId
+    f64,                         // flags
+    f64,                         // timeout ms
+    Option<Handle<'cx, JsArray>>, // headers, flat [name, value, name, value, ...]
+    Option<Handle<'cx, JsValue>>, // body: Buffer | string
+    Option<String>,              // transportId
+    Option<Handle<'cx, JsObject>>, // extras: browser/os/emulationJson/proxy/trustStore/onRequestEvent
+);
+
 fn request(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    // Get the options object
-    let options_obj = cx.argument::<JsObject>(0)?;
-    let request_id = cx.argument::<JsNumber>(1)?.value(&mut cx) as u64;
-    let cancellable = cx
-        .argument_opt(2)
-        .and_then(|value| value.downcast::<JsBoolean, _>(&mut cx).ok())
-        .map(|b| b.value(&mut cx))
-        .unwrap_or(true);
+    // Positional arguments arrive in a single napi_get_cb_info. The previous options
+    // object cost one napi_get_property per field, 24 per request, most of them absent
+    // on the pooled-session hot path. Rarely used fields travel in `extras`, an object
+    // that is only present (and only probed) when one of them is set.
+    let (
+        url,
+        method,
+        session_id,
+        request_id,
+        flags,
+        timeout,
+        headers,
+        body,
+        transport_id,
+        extras,
+    ): RequestArgs = cx.args()?;
 
+    let request_id = request_id as u64;
+    let flags = flags as u32;
+    let cancellable = flags & FLAG_CANCELLABLE != 0;
     let settle_channel = cx.channel();
-    let event_sink = options_obj
-        .get_opt::<JsFunction, _, _>(&mut cx, "onRequestEvent")?
-        .map(|callback| {
-            let callback = Arc::new(callback.root(&mut cx));
-            let channel = settle_channel.clone();
-            Arc::new(move |event: RequestEvent| {
-                let callback = callback.clone();
-                channel.send(move |mut cx| {
-                    let cb = callback.to_inner(&mut cx);
-                    let this = cx.undefined();
-                    let event_obj = request_event_to_js_object(&mut cx, event)?;
-                    cb.call(&mut cx, this, vec![event_obj.upcast()])?;
-                    Ok(())
-                });
-            }) as client::RequestEventSink
-        });
 
-    // Convert JS object to Rust struct
-    let options = js_object_to_request_options(&mut cx, options_obj, event_sink)?;
+    let headers = match headers {
+        Some(flat) => {
+            let flat = flat.to_vec(&mut cx)?;
+            if flat.len() % 2 != 0 {
+                return cx.throw_type_error("headers must be a flat array of name/value pairs");
+            }
+            let mut pairs = Vec::with_capacity(flat.len() / 2);
+            for pair in flat.chunks_exact(2) {
+                let name = coerce_header_value(&mut cx, pair[0])?;
+                let value = coerce_header_value(&mut cx, pair[1])?;
+                pairs.push((name, value));
+            }
+            pairs
+        }
+        None => Vec::new(),
+    };
+
+    let body = match body {
+        None => None,
+        Some(value) => {
+            if let Ok(buffer) = value.downcast::<JsBuffer, _>(&mut cx) {
+                Some(buffer.as_slice(&cx).to_vec())
+            } else if let Ok(js_str) = value.downcast::<JsString, _>(&mut cx) {
+                Some(js_str.value(&mut cx).into_bytes())
+            } else {
+                return cx.throw_type_error("body must be a string or Buffer");
+            }
+        }
+    };
+
+    let mut browser = None;
+    let mut browser_os = None;
+    let mut emulation_json = None;
+    let mut proxy = None;
+    let mut trust_store = TrustStoreMode::default();
+    let mut event_sink: Option<client::RequestEventSink> = None;
+
+    if let Some(extras) = extras {
+        browser = extras
+            .get_opt(&mut cx, "browser")?
+            .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
+            .map(|v| parse_emulation(&v.value(&mut cx)));
+        browser_os = extras
+            .get_opt(&mut cx, "os")?
+            .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
+            .map(|v| parse_emulation_os(&v.value(&mut cx)));
+        emulation_json = extras
+            .get_opt(&mut cx, "emulationJson")?
+            .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
+            .map(|v| Arc::<str>::from(v.value(&mut cx)));
+        proxy = extras
+            .get_opt(&mut cx, "proxy")?
+            .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
+            .map(|v| Arc::<str>::from(v.value(&mut cx)));
+        trust_store = extras
+            .get_opt(&mut cx, "trustStore")?
+            .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
+            .map(|v| parse_trust_store_mode(&v.value(&mut cx)))
+            .unwrap_or_default();
+        event_sink = extras
+            .get_opt::<JsFunction, _, _>(&mut cx, "onRequestEvent")?
+            .map(|callback| {
+                let callback = Arc::new(callback.root(&mut cx));
+                let channel = settle_channel.clone();
+                Arc::new(move |event: RequestEvent| {
+                    let callback = callback.clone();
+                    channel.send(move |mut cx| {
+                        let cb = callback.to_inner(&mut cx);
+                        let this = cx.undefined();
+                        let event_obj = request_event_to_js_object(&mut cx, event)?;
+                        cb.call(&mut cx, this, vec![event_obj.upcast()])?;
+                        Ok(())
+                    });
+                }) as client::RequestEventSink
+            });
+    }
+
+    let redirect = if flags & FLAG_REDIRECT_MANUAL != 0 {
+        RedirectMode::Manual
+    } else if flags & FLAG_REDIRECT_ERROR != 0 {
+        RedirectMode::Error
+    } else {
+        RedirectMode::Follow
+    };
+
+    let session_id = if session_id.trim().is_empty() {
+        generate_session_id()
+    } else {
+        session_id
+    };
+    let transport_id = transport_id.filter(|v| !v.trim().is_empty());
+
+    let options = RequestOptions {
+        url,
+        browser,
+        browser_os,
+        emulation_json,
+        headers,
+        method: if method.is_empty() { "GET".to_string() } else { method },
+        body,
+        proxy,
+        timeout: if timeout.is_finite() && timeout >= 0.0 { timeout as u64 } else { 30000 },
+        redirect,
+        session_id,
+        ephemeral: flags & FLAG_EPHEMERAL != 0,
+        disable_default_headers: flags & FLAG_DISABLE_DEFAULT_HEADERS != 0,
+        insecure: flags & FLAG_INSECURE != 0,
+        trust_store,
+        transport_id,
+        pool_idle_timeout: None,
+        pool_max_idle_per_host: None,
+        pool_max_size: None,
+        connect_timeout: None,
+        read_timeout: None,
+        compress: flags & FLAG_NO_COMPRESS == 0,
+        capture_diagnostics: flags & FLAG_CAPTURE_DIAGNOSTICS != 0,
+        event_sink,
+    };
     let error_event_sink = options.event_sink.clone();
 
     let (deferred, promise) = cx.promise();
