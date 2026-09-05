@@ -181,6 +181,7 @@ let nativeBinding: {
   dropTransport: (transportId: string) => void;
   getOperatingSystems?: () => string[];
   getEmulationHeaders?: (browser: string, os: string) => HeaderTuple[];
+  configureRuntime?: (options: { externalBuffers?: boolean }) => void;
 };
 
 let cachedProfiles: BrowserProfile[] | undefined;
@@ -307,6 +308,20 @@ function loadNativeBinding() {
 }
 
 nativeBinding = loadNativeBinding();
+
+// Large bodies can arrive as external buffers that own the native allocation instead
+// of being zero-filled and copied. That is on for Node, whose collector accounts
+// external memory itself. It is off for Bun: JSC cannot see those bytes, so under
+// load it collected them late and peak memory grew 3-4x, and reporting them through
+// napi_adjust_external_memory only pushed its collection threshold further out.
+// WREQ_EXTERNAL_BUFFERS=1|0 overrides the default.
+const externalBuffersOverride = process.env.WREQ_EXTERNAL_BUFFERS;
+nativeBinding.configureRuntime?.({
+  externalBuffers:
+    externalBuffersOverride !== undefined
+      ? externalBuffersOverride !== "0"
+      : typeof (globalThis as { Bun?: unknown }).Bun === "undefined",
+});
 
 const websocketFinalizer =
   typeof FinalizationRegistry === "function"

@@ -1,5 +1,6 @@
 mod client;
 mod custom_emulation;
+mod external_buffer;
 mod generated_profiles;
 mod websocket;
 
@@ -279,7 +280,7 @@ fn response_to_js_object<'a, C: Context<'a>>(
 
     // Absent fields are left absent rather than set to null; JS reads them with `??`.
     if let Some(bytes) = response.body_bytes {
-        let buffer = JsBuffer::from_slice(cx, &bytes)?;
+        let buffer = external_buffer::bytes_to_js_buffer(cx, bytes)?;
         obj.set(cx, "bodyBytes", buffer)?;
     }
 
@@ -952,7 +953,7 @@ fn read_body_chunk(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
         deferred.settle_with(&settle_channel, move |mut cx| match result {
             Ok(Some(bytes)) => {
-                let buffer = JsBuffer::from_slice(&mut cx, &bytes)?;
+                let buffer = external_buffer::bytes_to_js_buffer(&mut cx, bytes)?;
                 let value: Handle<JsValue> = buffer.upcast();
                 Ok(value)
             }
@@ -984,10 +985,7 @@ fn read_body_all(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let result = native_read_body_all(handle_id).await;
 
         deferred.settle_with(&settle_channel, move |mut cx| match result {
-            Ok(bytes) => {
-                let buffer = JsBuffer::from_slice(&mut cx, &bytes)?;
-                Ok(buffer)
-            }
+            Ok(bytes) => external_buffer::bytes_to_js_buffer(&mut cx, bytes),
             Err(e) => {
                 let error_msg = format!("{:#}", e);
                 cx.throw_error(error_msg)
@@ -1702,8 +1700,22 @@ fn set_cookies(mut cx: FunctionContext) -> JsResult<JsUndefined> {
 }
 
 // Module initialization
+/// Runtime hints from JS. `externalBuffers: false` makes every body a copied buffer.
+fn configure_runtime(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+    let options = cx.argument::<JsObject>(0)?;
+    let external = options
+        .get_opt::<JsBoolean, _, _>(&mut cx, "externalBuffers")?
+        .map(|value| value.value(&mut cx))
+        .unwrap_or(true);
+    external_buffer::set_enabled(external);
+    Ok(cx.undefined())
+}
+
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
+    external_buffer::init(&mut cx);
+
+    cx.export_function("configureRuntime", configure_runtime)?;
     cx.export_function("request", request)?;
     cx.export_function("cancelRequest", cancel_request)?;
     cx.export_function("readBodyChunk", read_body_chunk)?;
