@@ -132,35 +132,47 @@ describe("HTTP requests", () => {
     assert.ok(response.bodyUsed, "arrayBuffer() should mark the body as used");
   });
 
-  test("streams response bodies via ReadableStream", { skip: !isLocalHttpBase }, async () => {
-    const response = await wreqFetch(httpUrl("/stream/chunks?n=4&size=64"), {
-      browser: "chrome_142",
-      timeout: 10_000,
-    });
+  for (const { name, route, chunkCount, chunkSize } of [
+    { name: "paced", route: "/stream/chunks", chunkCount: 4, chunkSize: 64 },
+    { name: "buffered", route: "/chunked/many", chunkCount: 4, chunkSize: 64 },
+    { name: "large", route: "/chunked/many", chunkCount: 512, chunkSize: 8192 },
+  ]) {
+    test(`streams ${name} response bodies via ReadableStream`, { skip: !isLocalHttpBase }, async () => {
+      const response = await wreqFetch(httpUrl(`${route}?n=${chunkCount}&size=${chunkSize}`), {
+        browser: "chrome_142",
+        timeout: 10_000,
+      });
 
-    assert.ok(response.body && typeof response.body.getReader === "function", "body should be a ReadableStream");
-    assert.strictEqual(response.bodyUsed, false, "bodyUsed should remain false before consumption");
+      assert.ok(response.body && typeof response.body.getReader === "function", "body should be a ReadableStream");
+      assert.strictEqual(response.bodyUsed, false, "bodyUsed should remain false before consumption");
 
-    const reader = response.body?.getReader();
-    let chunkCount = 0;
-    let totalBytes = 0;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
+      const reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            break;
+          }
+          assert.ok(value, "chunk should have data");
+          chunks.push(value);
+        }
+      } finally {
+        reader.releaseLock();
       }
 
-      chunkCount += 1;
-      totalBytes += value?.byteLength ?? 0;
-      assert.ok(value, "chunk should have data");
-      assert.strictEqual(value?.[0], chunkCount - 1, "chunk data should preserve order");
-    }
-
-    assert.strictEqual(chunkCount, 4, "should receive all chunks");
-    assert.strictEqual(totalBytes, 4 * 64, "should receive expected byte count");
-    assert.ok(response.bodyUsed, "stream consumption should mark the body as used");
-  });
+      // Stream reads may split or combine server writes. Check every byte in order,
+      // independently of read boundaries, for both inline and native streamed bodies.
+      const actual = Buffer.concat(chunks);
+      const expected = Buffer.alloc(chunkCount * chunkSize);
+      for (let i = 0; i < chunkCount; i += 1) {
+        expected.fill(i & 0xff, i * chunkSize, (i + 1) * chunkSize);
+      }
+      assert.strictEqual(actual.length, expected.length, "should receive expected byte count");
+      assert.deepStrictEqual(actual, expected, "stream should preserve every byte in order");
+      assert.ok(response.bodyUsed, "stream consumption should mark the body as used");
+    });
+  }
 
   test("cancelling a response stream marks body as used and prevents re-read", { skip: !isLocalHttpBase }, async () => {
     const response = await wreqFetch(httpUrl("/stream/chunks?n=8&size=128"), {
