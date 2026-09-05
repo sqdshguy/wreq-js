@@ -825,9 +825,11 @@ function markNativeBodyReleased(handle: NativeBodyHandle): void {
   bodyHandleFinalizer?.unregister(handle);
 }
 
-function createNativeBodyStream(handle: NativeBodyHandle): ReadableStream<Uint8Array> {
+function createNativeBodyStream(handle: NativeBodyHandle, onFirstUse?: () => void): ReadableStream<Uint8Array> {
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
+      onFirstUse?.();
+      onFirstUse = undefined;
       try {
         const chunk = await nativeBinding.readBodyChunk(handle.id);
 
@@ -1023,7 +1025,15 @@ export class Response {
       }
       const handle = this.nativeHandle ?? { id: this.bodyHandleId, released: false };
       this.nativeHandle = handle;
-      this.bodySource = createNativeBodyStream(handle);
+      // Native streams can mark first use directly, without a forwarding stream.
+      const source = createNativeBodyStream(handle, () => {
+        // clone() may have replaced this source with a tee branch before the pull.
+        if (this.bodySource === source) {
+          this.bodyUsed = true;
+        }
+      });
+      this.bodySource = source;
+      this.bodyStream = source;
       this.nativeHandleAvailable = false;
     }
 
