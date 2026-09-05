@@ -73,4 +73,32 @@ describe("inline body buffering for unknown-length responses", () => {
     assert.ok(new TextDecoder().decode(first.value).startsWith("data: first"));
     await reader.cancel();
   });
+
+  test("streaming a body of many small frames preserves bytes and order", { skip: !isLocalHttpBase }, async () => {
+    const count = 512;
+    const size = 1024;
+    const response = await wreqFetch(httpUrl(`/chunked/many?n=${count}&size=${size}`), {
+      browser: "chrome_142",
+      timeout: 10_000,
+    });
+
+    const reads: number[] = [];
+    let offset = 0;
+    for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
+      reads.push(chunk.byteLength);
+      for (let i = 0; i < chunk.byteLength; i += 1) {
+        const expected = Math.floor((offset + i) / size) & 0xff;
+        if (chunk[i] !== expected) {
+          assert.fail(`byte ${offset + i} was ${chunk[i]}, expected ${expected}`);
+        }
+      }
+      offset += chunk.byteLength;
+    }
+
+    assert.strictEqual(offset, count * size, "every byte must arrive exactly once");
+    // Frames that were already delivered natively are merged into one read, so the
+    // client sees far fewer reads than the server wrote frames. Not asserted as an
+    // exact count: it depends on timing, only on it being a real reduction.
+    assert.ok(reads.length < count, `expected coalesced reads, got ${reads.length} for ${count} frames`);
+  });
 });
