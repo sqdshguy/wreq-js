@@ -3,7 +3,7 @@ import { describe, test } from "node:test";
 import { fetch as wreqFetch } from "../../wreq-js.js";
 import { httpUrl, isLocalHttpBase } from "../helpers/http.js";
 
-// Bodies of 64 KiB and more are handed to JS as external buffers that own the native
+// Bodies of 256 KiB and more are handed to JS as external buffers that own the native
 // allocation (or copied, on runtimes that refuse external buffers). Either way the
 // bytes, the zero-copy arrayBuffer() view, and the streamed variant must be intact.
 describe("large response bodies", () => {
