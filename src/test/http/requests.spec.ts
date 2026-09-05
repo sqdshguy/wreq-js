@@ -209,6 +209,23 @@ describe("HTTP requests", () => {
     await assert.rejects(async () => response.text(), /already\s+.*used/i);
   });
 
+  test("clones a native body after body access without consuming the original", {
+    skip: !isLocalHttpBase,
+  }, async () => {
+    const response = await wreqFetch(httpUrl("/stream/chunks?n=4&size=128"), {
+      browser: "chrome_142",
+      timeout: 10_000,
+    });
+    assert.ok(response.body);
+    const clone = response.clone();
+    const clonedBytes = await clone.bytes();
+    assert.strictEqual(response.bodyUsed, false);
+    const originalBytes = await response.bytes();
+    assert.deepStrictEqual(originalBytes, clonedBytes);
+    assert.strictEqual(originalBytes.byteLength, 512);
+    assert.strictEqual(response.bodyUsed, true);
+  });
+
   test("follows redirects by default", { skip: !isLocalHttpBase }, async () => {
     const response = await wreqFetch(httpUrl("/redirect"), {
       browser: "chrome_142",
