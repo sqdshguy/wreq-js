@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
 use dashmap::DashMap;
-use futures_util::{Stream, StreamExt};
+use futures_util::{Stream, StreamExt, stream};
 use moka::sync::Cache;
 use std::borrow::Cow;
 use std::net::SocketAddr;
@@ -42,6 +42,57 @@ static TRANSPORT_MANAGER: LazyLock<TransportManager> = LazyLock::new(TransportMa
 // Most API responses fit within 2 MiB; inlining them skips DashMap, Mutex, and an
 // additional FFI round-trip that the streaming path would otherwise require.
 const INLINE_BODY_MAX: u64 = 2 * 1024 * 1024;
+
+// Bodies whose length is unknown up front (chunked transfer, or any compressed
+// response, since decoding drops Content-Length) are buffered opportunistically:
+// frames that arrive within this window are collected, and if the body completes
+// under INLINE_BODY_MAX it is inlined exactly like a known-length body. Otherwise
+// the collected prefix is replayed ahead of the live stream through a body handle,
+// so streaming responses pay at most this much extra first-byte latency.
+const INLINE_BODY_WINDOW: Duration = Duration::from_millis(10);
+
+enum BufferedBody {
+    /// The whole body arrived within the window and fits the inline limit.
+    Complete(Bytes),
+    /// Frames collected before the window closed or the limit was exceeded.
+    Partial(Vec<Bytes>),
+}
+
+fn concat_chunks(chunks: Vec<Bytes>, total_len: usize) -> Bytes {
+    match chunks.len() {
+        0 => Bytes::new(),
+        1 => chunks.into_iter().next().unwrap(),
+        _ => {
+            let mut buf = Vec::with_capacity(total_len);
+            for chunk in chunks {
+                buf.extend_from_slice(&chunk);
+            }
+            Bytes::from(buf)
+        }
+    }
+}
+
+async fn buffer_unknown_length_body(stream: &mut ResponseBodyStream) -> wreq::Result<BufferedBody> {
+    let deadline = tokio::time::Instant::now() + INLINE_BODY_WINDOW;
+    let mut chunks: Vec<Bytes> = Vec::new();
+    let mut total_len = 0usize;
+
+    loop {
+        // `Next` is cancel-safe: a timed-out poll leaves the body stream intact.
+        match tokio::time::timeout_at(deadline, stream.next()).await {
+            Ok(Some(Ok(bytes))) => {
+                total_len += bytes.len();
+                chunks.push(bytes);
+                if total_len as u64 > INLINE_BODY_MAX {
+                    return Ok(BufferedBody::Partial(chunks));
+                }
+            }
+            Ok(Some(Err(err))) => return Err(err),
+            Ok(None) => return Ok(BufferedBody::Complete(concat_chunks(chunks, total_len))),
+            Err(_elapsed) => return Ok(BufferedBody::Partial(chunks)),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TrustStoreMode {
@@ -763,6 +814,35 @@ async fn make_request_inner(
 
     let allows_body = response_allows_body(status, method.as_ref());
 
+    // Event streams are consumed incrementally by design; never hold their first
+    // bytes back, even for the short inline window.
+    let is_event_stream = response
+        .headers()
+        .get(wreq::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim_start().to_ascii_lowercase().starts_with("text/event-stream"))
+        .unwrap_or(false);
+
+    let emit_inline_events = |bytes_len: u64, content_length: Option<u64>| {
+        if let Some(sink) = event_sink.as_ref() {
+            sink(RequestEvent::BodyProgress {
+                timestamp_ms: start.elapsed().as_millis() as u64,
+                downloaded_bytes: bytes_len,
+                content_length,
+            });
+            sink(RequestEvent::BodyComplete {
+                timestamp_ms: start.elapsed().as_millis() as u64,
+                downloaded_bytes: bytes_len,
+                content_length,
+            });
+            sink(RequestEvent::Done {
+                timestamp_ms: start.elapsed().as_millis() as u64,
+                status,
+                url: final_url.clone(),
+            });
+        }
+    };
+
     let (body_handle, body_bytes) = if allows_body {
         let inline_eligible = content_length
             .map(|len| len <= INLINE_BODY_MAX)
@@ -771,40 +851,45 @@ async fn make_request_inner(
         if inline_eligible {
             let bytes = response.bytes().await?;
             content_length = Some(bytes.len() as u64);
-            if let Some(sink) = event_sink.as_ref() {
-                sink(RequestEvent::BodyProgress {
-                    timestamp_ms: start.elapsed().as_millis() as u64,
-                    downloaded_bytes: bytes.len() as u64,
-                    content_length,
-                });
-                sink(RequestEvent::BodyComplete {
-                    timestamp_ms: start.elapsed().as_millis() as u64,
-                    downloaded_bytes: bytes.len() as u64,
-                    content_length,
-                });
-                sink(RequestEvent::Done {
-                    timestamp_ms: start.elapsed().as_millis() as u64,
-                    status,
-                    url: final_url.clone(),
-                });
-            }
+            emit_inline_events(bytes.len() as u64, content_length);
             (None, Some(bytes))
         } else {
-            let stream: ResponseBodyStream = Box::pin(response.bytes_stream());
-            let handle = store_body_stream(stream);
-            if let Some(sink) = event_sink.as_ref() {
-                BODY_EVENT_STATES.insert(
-                    handle,
-                    BodyEventState {
-                        sink: sink.clone(),
-                        content_length,
-                        downloaded_bytes: Arc::new(AtomicU64::new(0)),
-                        status,
-                        url: final_url.clone(),
-                    },
-                );
+            let mut stream: ResponseBodyStream = Box::pin(response.bytes_stream());
+
+            let buffered = if content_length.is_none() && !is_event_stream {
+                buffer_unknown_length_body(&mut stream).await?
+            } else {
+                BufferedBody::Partial(Vec::new())
+            };
+
+            match buffered {
+                BufferedBody::Complete(bytes) => {
+                    content_length = Some(bytes.len() as u64);
+                    emit_inline_events(bytes.len() as u64, content_length);
+                    (None, Some(bytes))
+                }
+                BufferedBody::Partial(prefix) => {
+                    let stream: ResponseBodyStream = if prefix.is_empty() {
+                        stream
+                    } else {
+                        Box::pin(stream::iter(prefix.into_iter().map(Ok)).chain(stream))
+                    };
+                    let handle = store_body_stream(stream);
+                    if let Some(sink) = event_sink.as_ref() {
+                        BODY_EVENT_STATES.insert(
+                            handle,
+                            BodyEventState {
+                                sink: sink.clone(),
+                                content_length,
+                                downloaded_bytes: Arc::new(AtomicU64::new(0)),
+                                status,
+                                url: final_url.clone(),
+                            },
+                        );
+                    }
+                    (Some(handle), None)
+                }
             }
-            (Some(handle), None)
         }
     } else {
         if let Some(sink) = event_sink.as_ref() {
