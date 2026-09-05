@@ -507,9 +507,16 @@ fn build_cert_store(mode: TrustStoreMode) -> Result<CertStore> {
         return Ok(store.clone());
     }
 
-    let store = build_cert_store_uncached(mode)?;
-    CERT_STORES.insert(mode, store.clone());
-    Ok(store)
+    // Concurrent cold requests must not all parse the same trust roots. Only
+    // immutable trust configuration is shared; connection state stays separate.
+    match CERT_STORES.entry(mode) {
+        dashmap::mapref::entry::Entry::Occupied(entry) => Ok(entry.get().clone()),
+        dashmap::mapref::entry::Entry::Vacant(entry) => {
+            let store = build_cert_store_uncached(mode)?;
+            entry.insert(store.clone());
+            Ok(store)
+        }
+    }
 }
 
 fn build_cert_store_uncached(mode: TrustStoreMode) -> Result<CertStore> {
@@ -852,9 +859,13 @@ impl EphemeralClientManager {
             return Ok(resolved);
         }
 
-        let resolved = Arc::new(build_ephemeral_client(&config)?);
-        self.cache.insert(config, resolved.clone());
-        Ok(resolved)
+        // Coalesce cold builds for the same configuration, while retaining the
+        // no-pooling and no-TLS-resumption policy of build_ephemeral_client.
+        self.cache
+            .try_get_with(config.clone(), || {
+                build_ephemeral_client(&config).map(Arc::new)
+            })
+            .map_err(|error| anyhow!("{error:#}"))
     }
 }
 
@@ -1392,6 +1403,48 @@ mod tests {
             capture_diagnostics: false,
             event_sink: None,
         }
+    }
+
+    #[test]
+    fn concurrent_ephemeral_clients_share_only_the_matching_configuration() {
+        let manager = EphemeralClientManager::new();
+        let mut options = base_request_options();
+        options.insecure = true;
+        let config = SessionConfig::from_request(&options);
+        let barrier = std::sync::Barrier::new(16);
+
+        let clients = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..16)
+                .map(|_| {
+                    let config = config.clone();
+                    let manager = &manager;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        manager.client_for(config).expect("build ephemeral client")
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+
+        for client in &clients[1..] {
+            assert!(
+                Arc::ptr_eq(&clients[0], client),
+                "cold callers must share one client build"
+            );
+        }
+        options.browser_os = Some(BrowserEmulationOS::Windows);
+        let other = manager
+            .client_for(SessionConfig::from_request(&options))
+            .unwrap();
+        assert!(
+            !Arc::ptr_eq(&clients[0], &other),
+            "different configurations must stay separate"
+        );
     }
 
     #[test]
