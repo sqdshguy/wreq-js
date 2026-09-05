@@ -193,7 +193,7 @@ impl SessionConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct TransportConfig {
     browser: Option<BrowserEmulation>,
     browser_os: Option<BrowserEmulationOS>,
@@ -284,6 +284,10 @@ struct SessionEntry {
 
 struct TransportManager {
     explicit: DashMap<String, Arc<TransportEntry>>,
+    // Pooled clients for requests that name a session by id without an explicit
+    // transport. Keyed by session id so sessions never share connections or TLS
+    // session state, and by config so per-request overrides get their own client.
+    implicit: Cache<(String, TransportConfig), Arc<ResolvedClient>>,
 }
 
 struct SessionManager {
@@ -526,7 +530,34 @@ impl TransportManager {
     fn new() -> Self {
         Self {
             explicit: DashMap::new(),
+            implicit: Cache::builder()
+                .time_to_idle(Duration::from_secs(300))
+                .support_invalidation_closures()
+                .build(),
         }
+    }
+
+    fn implicit_client_for(
+        &self,
+        session_id: &str,
+        config: TransportConfig,
+    ) -> Result<Arc<ResolvedClient>> {
+        let key = (session_id.to_owned(), config);
+        if let Some(resolved) = self.implicit.get(&key) {
+            return Ok(resolved);
+        }
+
+        let resolved = Arc::new(build_client(&key.1)?);
+        self.implicit.insert(key, resolved.clone());
+        Ok(resolved)
+    }
+
+    fn drop_implicit_clients(&self, session_id: &str) {
+        let session_id = session_id.to_owned();
+        // Only fails if the cache was built without closure invalidation support.
+        let _ = self
+            .implicit
+            .invalidate_entries_if(move |key, _| key.0 == session_id);
     }
 
     fn create_transport(&self, config: TransportConfig) -> Result<String> {
@@ -612,18 +643,18 @@ impl EphemeralClientManager {
     }
 }
 
-/// Resolve client: explicit transport > ephemeral cache > fresh client.
+/// Resolve client: explicit transport > ephemeral cache > per-session implicit cache.
 fn client_for_request(options: &RequestOptions) -> Result<Arc<ResolvedClient>> {
     if let Some(ref tid) = options.transport_id {
         return TRANSPORT_MANAGER.get_transport(tid);
     }
 
+    // A pinned request gets a client of its own on both paths below. Cached, every
+    // distinct pin would keep a client and its trust store alive for the caches' idle
+    // timeout, and pinning each request to a freshly vetted address is the main use of
+    // a per-request resolve.
     if options.ephemeral {
         let config = SessionConfig::from_request(options);
-        // A pinned request gets a client of its own, like a sessionId request does.
-        // Cached, every distinct pin would keep a client and its trust store alive for
-        // the cache's idle timeout, and pinning each request to a freshly vetted
-        // address is the main use of a per-request resolve.
         if !config.resolve.is_empty() {
             return Ok(Arc::new(build_ephemeral_client(&config)?));
         }
@@ -631,7 +662,10 @@ fn client_for_request(options: &RequestOptions) -> Result<Arc<ResolvedClient>> {
     }
 
     let config = TransportConfig::from_request(options);
-    Ok(Arc::new(build_client(&config)?))
+    if !config.resolve.is_empty() {
+        return Ok(Arc::new(build_client(&config)?));
+    }
+    TRANSPORT_MANAGER.implicit_client_for(&options.session_id, config)
 }
 
 pub async fn make_request(options: RequestOptions) -> Result<Response> {
@@ -1001,6 +1035,7 @@ pub fn clear_managed_session(session_id: &str) -> Result<()> {
 
 pub fn drop_managed_session(session_id: &str) {
     SESSION_MANAGER.drop_session(session_id);
+    TRANSPORT_MANAGER.drop_implicit_clients(session_id);
 }
 
 pub fn create_managed_transport(
@@ -1165,6 +1200,16 @@ mod tests {
         assert!(EPHEMERAL_MANAGER
             .cache
             .contains_key(&SessionConfig::from_request(&unpinned)));
+
+        // Same for a request that passes a sessionId, which uses the implicit pool.
+        pinned.ephemeral = false;
+        pinned.session_id = "pinned-session".to_string();
+        client_for_request(&pinned).expect("pinned session client");
+        assert!(!TRANSPORT_MANAGER.implicit.contains_key(&(
+            pinned.session_id.clone(),
+            TransportConfig::from_request(&pinned)
+        )));
+        TRANSPORT_MANAGER.drop_implicit_clients("pinned-session");
     }
 
     #[test]
