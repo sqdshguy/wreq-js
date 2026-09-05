@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
 use tokio::sync::{Mutex, Semaphore, mpsc};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use wreq::cookie::Jar;
 use wreq::header::OrigHeaderMap;
@@ -402,18 +403,32 @@ const STREAM_BUFFER_BYTES: usize = 256 * 1024;
 // Upper bound on how many buffered frames one readBodyChunk() call merges.
 const STREAM_CHUNK_BUDGET: usize = 256 * 1024;
 
+// When a body is abandoned with data still unread, the pump keeps reading and discards
+// up to this much so the connection can go back to the pool; past it the body is dropped
+// and hyper closes the connection. undici's dump() draws the same line at 128 KiB; this
+// matches the read-ahead buffer so "fits in the buffer" and "worth draining" agree.
+const ABANDON_DRAIN_LIMIT: u64 = STREAM_BUFFER_BYTES as u64;
+
 struct BodyStreamState {
     frames: mpsc::UnboundedReceiver<wreq::Result<Bytes>>,
     /// Bytes the pump may still buffer. The pump takes permits per frame, the reader
-    /// returns them; dropping the state closes it and stops the pump.
+    /// returns them.
     capacity: Arc<Semaphore>,
     /// An error taken off the buffer while coalescing, returned by the next read.
     pending_error: Option<wreq::Error>,
 }
 
-impl Drop for BodyStreamState {
+struct StoredBody {
+    state: Mutex<BodyStreamState>,
+    /// Fired when nothing will read the body any more: cancelBody() from JS, or the
+    /// entry being evicted. Explicit rather than relying on the value being dropped,
+    /// because the cache releases evicted values from its housekeeper, not inline.
+    abandon: CancellationToken,
+}
+
+impl Drop for StoredBody {
     fn drop(&mut self) {
-        self.capacity.close();
+        self.abandon.cancel();
     }
 }
 
@@ -421,7 +436,7 @@ fn buffer_permits(len: usize) -> u32 {
     len.min(STREAM_BUFFER_BYTES) as u32
 }
 
-static BODY_STREAMS: LazyLock<Cache<u64, Arc<Mutex<BodyStreamState>>>> = LazyLock::new(|| {
+static BODY_STREAMS: LazyLock<Cache<u64, Arc<StoredBody>>> = LazyLock::new(|| {
     Cache::builder()
         .time_to_idle(Duration::from_secs(300))
         .build()
@@ -507,17 +522,52 @@ fn build_cert_store_uncached(mode: TrustStoreMode) -> Result<CertStore> {
     }
 }
 
-pub fn store_body_stream(mut stream: ResponseBodyStream) -> u64 {
+fn abandoned_body_is_drainable(content_length: Option<u64>, delivered: u64) -> bool {
+    match content_length {
+        Some(total) => total.saturating_sub(delivered) <= ABANDON_DRAIN_LIMIT,
+        None => true,
+    }
+}
+
+pub fn store_body_stream(mut stream: ResponseBodyStream, content_length: Option<u64>) -> u64 {
     let handle = next_body_handle();
     let (tx, rx) = mpsc::unbounded_channel();
     let capacity = Arc::new(Semaphore::new(STREAM_BUFFER_BYTES));
+    let abandon = CancellationToken::new();
 
     let pump_capacity = capacity.clone();
+    let pump_abandon = abandon.clone();
     HTTP_RUNTIME.spawn(async move {
+        let mut delivered: u64 = 0;
+        let mut drained: u64 = 0;
+        let mut draining = false;
+
         loop {
+            if draining {
+                // Nobody will read this body. Discard the remainder up to the cap so
+                // the connection can be reused; past it, drop the stream and let hyper
+                // close the connection.
+                match stream.next().await {
+                    Some(Ok(bytes)) => {
+                        drained += bytes.len() as u64;
+                        if drained > ABANDON_DRAIN_LIMIT {
+                            break;
+                        }
+                    }
+                    _ => break,
+                }
+                continue;
+            }
+
             let item = tokio::select! {
-                // The reader side is gone (handle dropped, cancelled, or evicted).
-                _ = tx.closed() => break,
+                // The reader side is gone (cancelled from JS, or the entry was evicted).
+                _ = pump_abandon.cancelled() => {
+                    if abandoned_body_is_drainable(content_length, delivered) {
+                        draining = true;
+                        continue;
+                    }
+                    break;
+                }
                 item = stream.next() => match item {
                     Some(item) => item,
                     None => break,
@@ -526,10 +576,23 @@ pub fn store_body_stream(mut stream: ResponseBodyStream) -> u64 {
 
             let is_err = item.is_err();
             if let Ok(bytes) = &item {
-                match pump_capacity.acquire_many(buffer_permits(bytes.len())).await {
-                    Ok(permits) => permits.forget(),
-                    Err(_) => break,
+                let permits = tokio::select! {
+                    _ = pump_abandon.cancelled() => None,
+                    permits = pump_capacity.acquire_many(buffer_permits(bytes.len())) => permits.ok(),
+                };
+                match permits {
+                    Some(permits) => permits.forget(),
+                    None => {
+                        // Abandoned while waiting for buffer room; this frame counts as drained.
+                        if abandoned_body_is_drainable(content_length, delivered) {
+                            drained += bytes.len() as u64;
+                            draining = true;
+                            continue;
+                        }
+                        break;
+                    }
                 }
+                delivered += bytes.len() as u64;
             }
             if tx.send(item).is_err() || is_err {
                 break;
@@ -539,11 +602,14 @@ pub fn store_body_stream(mut stream: ResponseBodyStream) -> u64 {
 
     BODY_STREAMS.insert(
         handle,
-        Arc::new(Mutex::new(BodyStreamState {
-            frames: rx,
-            capacity,
-            pending_error: None,
-        })),
+        Arc::new(StoredBody {
+            state: Mutex::new(BodyStreamState {
+                frames: rx,
+                capacity,
+                pending_error: None,
+            }),
+            abandon,
+        }),
     );
     handle
 }
@@ -571,7 +637,7 @@ pub async fn read_body_chunk(handle: u64) -> Result<Option<Bytes>> {
         .get(&handle)
         .ok_or_else(|| anyhow!("Body handle {} not found", handle))?;
 
-    let mut guard = stream.lock().await;
+    let mut guard = stream.state.lock().await;
 
     if let Some(err) = guard.pending_error.take() {
         return Err(finish_body_stream_error(handle, err));
@@ -620,7 +686,7 @@ pub async fn read_body_all(handle: u64) -> Result<Bytes> {
         .remove(&handle)
         .ok_or_else(|| anyhow!("Body handle {} not found", handle))?;
 
-    let mut guard = stream.lock().await;
+    let mut guard = stream.state.lock().await;
     let mut chunks: Vec<Bytes> = Vec::new();
     let mut total_len = 0usize;
 
@@ -649,7 +715,9 @@ pub async fn read_body_all(handle: u64) -> Result<Bytes> {
 }
 
 pub fn drop_body_stream(handle: u64) {
-    BODY_STREAMS.invalidate(&handle);
+    if let Some(body) = BODY_STREAMS.remove(&handle) {
+        body.abandon.cancel();
+    }
     BODY_EVENT_STATES.remove(&handle);
 }
 
@@ -994,7 +1062,7 @@ async fn make_request_inner(
                     } else {
                         Box::pin(stream::iter(prefix.into_iter().map(Ok)).chain(stream))
                     };
-                    let handle = store_body_stream(stream);
+                    let handle = store_body_stream(stream, content_length);
                     if let Some(sink) = event_sink.as_ref() {
                         BODY_EVENT_STATES.insert(
                             handle,
