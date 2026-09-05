@@ -2,9 +2,8 @@
 //!
 //! `napi_create_external_buffer` wraps a Rust allocation in a `Buffer` and frees it
 //! through a finalizer when the JS object is collected. That skips the zero-fill and
-//! memcpy of `napi_create_buffer_copy`, which the profile showed as the two largest
-//! costs of settling a large body, and it halves peak memory because the bytes no
-//! longer exist twice while both copies are alive.
+//! memcpy of `napi_create_buffer_copy`. Peak memory still depends on allocation
+//! sizes, request rate, and the runtime's garbage collection behavior.
 //!
 //! Runtimes built with V8's sandbox (Electron) refuse external buffers with
 //! `napi_no_external_buffers_allowed`. neon's `JsBuffer::external` unwraps that
@@ -26,9 +25,10 @@ use bytes::Bytes;
 use neon::prelude::*;
 use neon::sys::bindings::{Env as RawEnv, Value as RawValue};
 
-/// Bodies at or below this size are copied; the finalizer bookkeeping of an external
-/// buffer costs more than a small memcpy.
-pub const EXTERNAL_BUFFER_MIN: usize = 64 * 1024;
+/// Smaller buffers are copied: equal-rate Node benchmarks showed lower resident
+/// memory at 64 KiB with negligible throughput differences. Keep larger buffers
+/// external to retain the throughput and CPU benefits on large full-body reads.
+pub const EXTERNAL_BUFFER_MIN: usize = 256 * 1024;
 
 const NAPI_OK: u32 = 0;
 const NAPI_NO_EXTERNAL_BUFFERS_ALLOWED: u32 = 22;
