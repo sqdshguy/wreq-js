@@ -212,7 +212,8 @@ describe("HTTP requests", () => {
   test("clones a native body after body access without consuming the original", {
     skip: !isLocalHttpBase,
   }, async () => {
-    const response = await wreqFetch(httpUrl("/stream/chunks?n=4&size=128"), {
+    // Exceed the inline limit even if the entire response arrives before fetch resolves.
+    const response = await wreqFetch(httpUrl("/chunked/many?n=512&size=8192"), {
       browser: "chrome_142",
       timeout: 10_000,
     });
@@ -222,7 +223,7 @@ describe("HTTP requests", () => {
     assert.strictEqual(response.bodyUsed, false);
     const originalBytes = await response.bytes();
     assert.deepStrictEqual(originalBytes, clonedBytes);
-    assert.strictEqual(originalBytes.byteLength, 512);
+    assert.strictEqual(originalBytes.byteLength, 512 * 8192);
     assert.strictEqual(response.bodyUsed, true);
   });
 
