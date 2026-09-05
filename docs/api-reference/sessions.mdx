@@ -201,6 +201,12 @@ Close the session and release resources. Always call this when done.
 await session.close();
 ```
 
+A session's cookie jar lives in the native addon until the session is closed. It never
+expires on its own, so a session that sits idle for hours still sends its cookies on the
+next request. If a `Session` object is garbage collected without `close()` having been
+called, its native state is released by a finalizer, but relying on that delays cleanup
+until the runtime decides to collect; prefer `close()` or `await using`.
+
 ### Example
 
 ```typescript

@@ -285,6 +285,36 @@ const websocketFinalizer =
 
 type NativeBodyHandle = { id: number; released: boolean };
 
+// Native session state (cookie jar, and the transport a createSession() call built for it)
+// is addressed by id and lives in the addon until dropped. Session.close() drops it
+// explicitly; this finalizer drops it for Session objects that were never closed, the same
+// way undici cancels the bodies of collected Response objects. The token doubles as the
+// held value so close() can mark the state released and unregister it.
+type SessionNativeState = { id: string; transportId?: string; ownsTransport: boolean; released: boolean };
+
+const sessionFinalizer =
+  typeof FinalizationRegistry === "function"
+    ? new FinalizationRegistry<SessionNativeState>((state: SessionNativeState) => {
+        if (state.released) {
+          return;
+        }
+
+        state.released = true;
+        try {
+          nativeBinding.dropSession(state.id);
+        } catch {
+          // Best-effort cleanup; ignore binding-level failures.
+        }
+        if (state.ownsTransport && state.transportId) {
+          try {
+            nativeBinding.dropTransport(state.transportId);
+          } catch {
+            // Best-effort cleanup; ignore binding-level failures.
+          }
+        }
+      })
+    : undefined;
+
 const bodyHandleFinalizer =
   typeof FinalizationRegistry === "function"
     ? new FinalizationRegistry<NativeBodyHandle>((handle: NativeBodyHandle) => {
@@ -1131,10 +1161,18 @@ export class Session implements SessionHandle {
   readonly id: string;
   private disposed = false;
   private readonly defaults: SessionDefaults;
+  private readonly nativeState: SessionNativeState;
 
   constructor(id: string, defaults: SessionDefaults) {
     this.id = id;
     this.defaults = defaults;
+    this.nativeState = {
+      id,
+      ...(defaults.transportId !== undefined && { transportId: defaults.transportId }),
+      ownsTransport: defaults.ownsTransport ?? false,
+      released: false,
+    };
+    sessionFinalizer?.register(this, this.nativeState, this.nativeState);
   }
 
   get closed(): boolean {
@@ -1304,6 +1342,10 @@ export class Session implements SessionHandle {
     this.disposed = true;
     const transportId = this.defaults.transportId;
     const ownsTransport = this.defaults.ownsTransport;
+
+    // Explicit close owns the cleanup from here; the finalizer must not repeat it.
+    this.nativeState.released = true;
+    sessionFinalizer?.unregister(this.nativeState);
 
     try {
       nativeBinding.dropSession(this.id);

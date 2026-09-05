@@ -370,7 +370,11 @@ struct TransportManager {
 }
 
 struct SessionManager {
-    cache: Cache<String, Arc<SessionEntry>>,
+    // Cookie jars live until dropSession(), which Session.close() and the JS
+    // finalizer for unreferenced Session objects both call. They used to sit in an
+    // idle-expiring cache, which silently handed any session that had been quiet
+    // for five minutes a fresh, empty jar on its next request.
+    sessions: DashMap<String, Arc<SessionEntry>>,
 }
 
 struct EphemeralClientManager {
@@ -616,21 +620,24 @@ impl TransportManager {
 impl SessionManager {
     fn new() -> Self {
         Self {
-            cache: Cache::builder()
-                .time_to_idle(Duration::from_secs(300))
-                .build(),
+            sessions: DashMap::new(),
         }
     }
 
     fn jar_for(&self, session_id: &str) -> Result<Arc<Jar>> {
-        if let Some(entry) = self.cache.get(session_id) {
+        if let Some(entry) = self.sessions.get(session_id) {
             return Ok(entry.cookie_jar.clone());
         }
 
-        let entry = Arc::new(SessionEntry {
-            cookie_jar: Arc::new(Jar::default()),
-        });
-        self.cache.insert(session_id.to_string(), entry.clone());
+        let entry = self
+            .sessions
+            .entry(session_id.to_string())
+            .or_insert_with(|| {
+                Arc::new(SessionEntry {
+                    cookie_jar: Arc::new(Jar::default()),
+                })
+            })
+            .clone();
         Ok(entry.cookie_jar.clone())
     }
 
@@ -638,13 +645,13 @@ impl SessionManager {
         let entry = Arc::new(SessionEntry {
             cookie_jar: Arc::new(Jar::default()),
         });
-        self.cache.insert(session_id.clone(), entry);
+        self.sessions.insert(session_id.clone(), entry);
         Ok(session_id)
     }
 
     fn clear_session(&self, session_id: &str) -> Result<()> {
         let entry = self
-            .cache
+            .sessions
             .get(session_id)
             .ok_or_else(|| anyhow::anyhow!("Session '{}' not found", session_id))?;
         entry.cookie_jar.clear();
@@ -652,7 +659,7 @@ impl SessionManager {
     }
 
     fn drop_session(&self, session_id: &str) {
-        self.cache.invalidate(session_id);
+        self.sessions.remove(session_id);
     }
 }
 
@@ -1129,6 +1136,21 @@ mod tests {
         include_str!("../../src/test/helpers/certs/default-paths-leaf.crt");
 
     static ENV_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
+
+    #[test]
+    fn managed_sessions_keep_their_jar_until_dropped() {
+        let id = format!("lifetime-{}", Uuid::new_v4());
+        create_managed_session(id.clone()).expect("create session");
+
+        let first = get_session_cookie_jar(&id).expect("jar");
+        let again = get_session_cookie_jar(&id).expect("jar again");
+        assert!(Arc::ptr_eq(&first, &again), "the jar must persist across lookups");
+
+        drop_managed_session(&id);
+        let fresh = get_session_cookie_jar(&id).expect("jar after drop");
+        assert!(!Arc::ptr_eq(&first, &fresh), "dropping the session must release its jar");
+        drop_managed_session(&id);
+    }
 
     #[test]
     fn cookie_origin_uri_maps_websocket_schemes_to_http() {
