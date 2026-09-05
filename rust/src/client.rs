@@ -6,6 +6,7 @@ use moka::sync::Cache;
 use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::task::Poll;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -44,17 +45,19 @@ static TRANSPORT_MANAGER: LazyLock<TransportManager> = LazyLock::new(TransportMa
 const INLINE_BODY_MAX: u64 = 2 * 1024 * 1024;
 
 // Bodies whose length is unknown up front (chunked transfer, or any compressed
-// response, since decoding drops Content-Length) are buffered opportunistically:
-// frames that arrive within this window are collected, and if the body completes
-// under INLINE_BODY_MAX it is inlined exactly like a known-length body. Otherwise
-// the collected prefix is replayed ahead of the live stream through a body handle,
-// so streaming responses pay at most this much extra first-byte latency.
-const INLINE_BODY_WINDOW: Duration = Duration::from_millis(10);
+// response, since decoding drops Content-Length) are inlined opportunistically:
+// frames hyper has already delivered are collected without waiting on the network,
+// and if that completes the body under INLINE_BODY_MAX it is inlined exactly like a
+// known-length body. Otherwise the collected prefix is replayed ahead of the live
+// stream through a body handle. This mirrors Bun's fetch, which inlines a body only
+// when it has fully arrived by the time the response reaches JS, so streaming
+// responses never sit behind a timer.
 
 enum BufferedBody {
-    /// The whole body arrived within the window and fits the inline limit.
+    /// The whole body had already arrived and fits the inline limit.
     Complete(Bytes),
-    /// Frames collected before the window closed or the limit was exceeded.
+    /// Frames that were already available before the stream went pending or the
+    /// limit was exceeded.
     Partial(Vec<Bytes>),
 }
 
@@ -72,24 +75,53 @@ fn concat_chunks(chunks: Vec<Bytes>, total_len: usize) -> Bytes {
     }
 }
 
-async fn buffer_unknown_length_body(stream: &mut ResponseBodyStream) -> wreq::Result<BufferedBody> {
-    let deadline = tokio::time::Instant::now() + INLINE_BODY_WINDOW;
+enum Drain {
+    Complete(Bytes),
+    LimitExceeded,
+    Pending,
+}
+
+/// Drain whatever the body stream can yield right now, never waiting on the network.
+///
+/// hyper hands the response to us as soon as the headers are parsed, while the
+/// connection task is often still delivering body frames it already has in its
+/// buffer (for chunked transfer the terminating chunk always needs one more poll).
+/// A single `yield_now` lets that task finish before we decide, which is a scheduler
+/// hop measured in microseconds, not a wait on I/O.
+async fn buffer_ready_body(stream: &mut ResponseBodyStream) -> wreq::Result<BufferedBody> {
     let mut chunks: Vec<Bytes> = Vec::new();
     let mut total_len = 0usize;
+    let mut yielded = false;
 
     loop {
-        // `Next` is cancel-safe: a timed-out poll leaves the body stream intact.
-        match tokio::time::timeout_at(deadline, stream.next()).await {
-            Ok(Some(Ok(bytes))) => {
-                total_len += bytes.len();
-                chunks.push(bytes);
-                if total_len as u64 > INLINE_BODY_MAX {
-                    return Ok(BufferedBody::Partial(chunks));
+        let drained = std::future::poll_fn(|cx| loop {
+            match stream.as_mut().poll_next(cx) {
+                Poll::Ready(Some(Ok(bytes))) => {
+                    total_len += bytes.len();
+                    chunks.push(bytes);
+                    if total_len as u64 > INLINE_BODY_MAX {
+                        return Poll::Ready(Ok(Drain::LimitExceeded));
+                    }
                 }
+                Poll::Ready(Some(Err(err))) => return Poll::Ready(Err(err)),
+                Poll::Ready(None) => {
+                    let chunks = std::mem::take(&mut chunks);
+                    return Poll::Ready(Ok(Drain::Complete(concat_chunks(chunks, total_len))));
+                }
+                // The stream registered our waker, but we are not going to wait for it.
+                Poll::Pending => return Poll::Ready(Ok(Drain::Pending)),
             }
-            Ok(Some(Err(err))) => return Err(err),
-            Ok(None) => return Ok(BufferedBody::Complete(concat_chunks(chunks, total_len))),
-            Err(_elapsed) => return Ok(BufferedBody::Partial(chunks)),
+        })
+        .await?;
+
+        match drained {
+            Drain::Complete(bytes) => return Ok(BufferedBody::Complete(bytes)),
+            Drain::LimitExceeded => return Ok(BufferedBody::Partial(chunks)),
+            Drain::Pending if !yielded => {
+                yielded = true;
+                tokio::task::yield_now().await;
+            }
+            Drain::Pending => return Ok(BufferedBody::Partial(chunks)),
         }
     }
 }
@@ -814,15 +846,6 @@ async fn make_request_inner(
 
     let allows_body = response_allows_body(status, method.as_ref());
 
-    // Event streams are consumed incrementally by design; never hold their first
-    // bytes back, even for the short inline window.
-    let is_event_stream = response
-        .headers()
-        .get(wreq::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.trim_start().to_ascii_lowercase().starts_with("text/event-stream"))
-        .unwrap_or(false);
-
     let emit_inline_events = |bytes_len: u64, content_length: Option<u64>| {
         if let Some(sink) = event_sink.as_ref() {
             sink(RequestEvent::BodyProgress {
@@ -856,8 +879,8 @@ async fn make_request_inner(
         } else {
             let mut stream: ResponseBodyStream = Box::pin(response.bytes_stream());
 
-            let buffered = if content_length.is_none() && !is_event_stream {
-                buffer_unknown_length_body(&mut stream).await?
+            let buffered = if content_length.is_none() {
+                buffer_ready_body(&mut stream).await?
             } else {
                 BufferedBody::Partial(Vec::new())
             };
