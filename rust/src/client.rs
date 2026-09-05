@@ -406,6 +406,12 @@ const STREAM_BUFFER_BYTES: usize = 256 * 1024;
 // Upper bound on how many buffered frames one readBodyChunk() call merges.
 const STREAM_CHUNK_BUDGET: usize = 256 * 1024;
 
+// When a body is abandoned with data still unread, the pump keeps reading and discards
+// up to this much so the connection can go back to the pool; past it the body is dropped
+// and hyper closes the connection. undici's dump() draws the same line at 128 KiB; this
+// matches the read-ahead buffer so "fits in the buffer" and "worth draining" agree.
+const ABANDON_DRAIN_LIMIT: u64 = STREAM_BUFFER_BYTES as u64;
+
 struct BodyStreamState {
     frames: mpsc::UnboundedReceiver<wreq::Result<Bytes>>,
     /// Bytes the pump may still buffer. The pump takes permits per frame, the reader
@@ -417,16 +423,15 @@ struct BodyStreamState {
 
 struct StoredBody {
     state: Mutex<BodyStreamState>,
-    /// Fired by cancelBody() to stop the pump, which drops the stream and closes the
-    /// connection. Dropping the map entry is not enough: moka keeps its own reference
-    /// until its housekeeping runs on some later cache operation, and a read in progress
-    /// holds another. A read waiting on the buffer wakes when the pump's sender drops.
-    cancel: CancellationToken,
+    /// Fired when nothing will read the body any more: cancelBody() from JS, or the
+    /// entry being evicted. Explicit rather than relying on the value being dropped,
+    /// because the cache releases evicted values from its housekeeper, not inline.
+    abandon: CancellationToken,
 }
 
 impl Drop for StoredBody {
     fn drop(&mut self) {
-        self.cancel.cancel();
+        self.abandon.cancel();
     }
 }
 
@@ -520,19 +525,52 @@ fn build_cert_store_uncached(mode: TrustStoreMode) -> Result<CertStore> {
     }
 }
 
-pub fn store_body_stream(mut stream: ResponseBodyStream) -> u64 {
+fn abandoned_body_is_drainable(content_length: Option<u64>, delivered: u64) -> bool {
+    match content_length {
+        Some(total) => total.saturating_sub(delivered) <= ABANDON_DRAIN_LIMIT,
+        None => true,
+    }
+}
+
+pub fn store_body_stream(mut stream: ResponseBodyStream, content_length: Option<u64>) -> u64 {
     let handle = next_body_handle();
     let (tx, rx) = mpsc::unbounded_channel();
     let capacity = Arc::new(Semaphore::new(STREAM_BUFFER_BYTES));
-    let cancel = CancellationToken::new();
+    let abandon = CancellationToken::new();
 
     let pump_capacity = capacity.clone();
-    let pump_cancel = cancel.clone();
+    let pump_abandon = abandon.clone();
     HTTP_RUNTIME.spawn(async move {
+        let mut delivered: u64 = 0;
+        let mut drained: u64 = 0;
+        let mut draining = false;
+
         loop {
+            if draining {
+                // Nobody will read this body. Discard the remainder up to the cap so
+                // the connection can be reused; past it, drop the stream and let hyper
+                // close the connection.
+                match stream.next().await {
+                    Some(Ok(bytes)) => {
+                        drained += bytes.len() as u64;
+                        if drained > ABANDON_DRAIN_LIMIT {
+                            break;
+                        }
+                    }
+                    _ => break,
+                }
+                continue;
+            }
+
             let item = tokio::select! {
-                // Cancelled from JS, or the entry was dropped or evicted.
-                _ = pump_cancel.cancelled() => break,
+                // The reader side is gone (cancelled from JS, or the entry was evicted).
+                _ = pump_abandon.cancelled() => {
+                    if abandoned_body_is_drainable(content_length, delivered) {
+                        draining = true;
+                        continue;
+                    }
+                    break;
+                }
                 item = stream.next() => match item {
                     Some(item) => item,
                     None => break,
@@ -542,13 +580,22 @@ pub fn store_body_stream(mut stream: ResponseBodyStream) -> u64 {
             let is_err = item.is_err();
             if let Ok(bytes) = &item {
                 let permits = tokio::select! {
-                    _ = pump_cancel.cancelled() => None,
+                    _ = pump_abandon.cancelled() => None,
                     permits = pump_capacity.acquire_many(buffer_permits(bytes.len())) => permits.ok(),
                 };
                 match permits {
                     Some(permits) => permits.forget(),
-                    None => break,
+                    None => {
+                        // Abandoned while waiting for buffer room; this frame counts as drained.
+                        if abandoned_body_is_drainable(content_length, delivered) {
+                            drained += bytes.len() as u64;
+                            draining = true;
+                            continue;
+                        }
+                        break;
+                    }
                 }
+                delivered += bytes.len() as u64;
             }
             if tx.send(item).is_err() || is_err {
                 break;
@@ -564,7 +611,7 @@ pub fn store_body_stream(mut stream: ResponseBodyStream) -> u64 {
                 capacity,
                 pending_error: None,
             }),
-            cancel,
+            abandon,
         }),
     );
     handle
@@ -579,6 +626,16 @@ fn finish_body_stream_error(handle: u64, err: wreq::Error) -> anyhow::Error {
         });
     }
     err.into()
+}
+
+/// The next buffered frame, or `None` once the body has ended or been abandoned. A read
+/// waiting here wakes on cancelBody() at once rather than when the pump finishes draining.
+async fn next_frame(stored: &StoredBody, state: &mut BodyStreamState) -> Option<wreq::Result<Bytes>> {
+    tokio::select! {
+        biased;
+        _ = stored.abandon.cancelled() => None,
+        frame = state.frames.recv() => frame,
+    }
 }
 
 fn finish_body_stream_end(handle: u64) {
@@ -600,7 +657,7 @@ pub async fn read_body_chunk(handle: u64) -> Result<Option<Bytes>> {
     }
 
     // Wait for one frame; this is the only point that blocks on the network.
-    let first = match guard.frames.recv().await {
+    let first = match next_frame(&stream, &mut guard).await {
         Some(Ok(bytes)) => bytes,
         Some(Err(err)) => return Err(finish_body_stream_error(handle, err)),
         None => {
@@ -651,7 +708,7 @@ pub async fn read_body_all(handle: u64) -> Result<Bytes> {
         return Err(finish_body_stream_error(handle, err));
     }
 
-    while let Some(result) = guard.frames.recv().await {
+    while let Some(result) = next_frame(&stream, &mut guard).await {
         let bytes = match result {
             Ok(bytes) => bytes,
             Err(err) => return Err(finish_body_stream_error(handle, err)),
@@ -674,7 +731,7 @@ pub async fn read_body_all(handle: u64) -> Result<Bytes> {
 
 pub fn drop_body_stream(handle: u64) {
     if let Some(body) = BODY_STREAMS.remove(&handle) {
-        body.cancel.cancel();
+        body.abandon.cancel();
     }
     BODY_EVENT_STATES.remove(&handle);
 }
@@ -1032,7 +1089,7 @@ async fn make_request_inner(
                     } else {
                         Box::pin(stream::iter(prefix.into_iter().map(Ok)).chain(stream))
                     };
-                    let handle = store_body_stream(stream);
+                    let handle = store_body_stream(stream, content_length);
                     if let Some(sink) = event_sink.as_ref() {
                         BODY_EVENT_STATES.insert(
                             handle,
