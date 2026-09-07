@@ -134,6 +134,11 @@ await transport.close();
 
 After closing, `transport.closed` becomes `true` and the transport can no longer be used.
 
+A transport's native client and connection pool live until it is closed. If a `Transport`
+object is garbage collected without `close()` having been called, a finalizer releases the
+native client and its pooled connections, but that only happens whenever the runtime decides
+to collect; prefer `close()` or `await using` for prompt cleanup.
+
 ## Sharing a transport across cookie jars
 
 If you need separate cookie jars with shared transport settings (for example, multiple sessions through the same proxy), you can pass the same transport to multiple `Session.fetch()` calls.

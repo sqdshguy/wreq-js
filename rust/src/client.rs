@@ -1,21 +1,24 @@
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
 use dashmap::DashMap;
-use futures_util::{Stream, StreamExt};
+use futures_util::{Stream, StreamExt, stream};
 use moka::sync::Cache;
 use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::task::Poll;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore, mpsc};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use wreq::cookie::Jar;
 use wreq::header::OrigHeaderMap;
 use wreq::tls::TlsInfo;
+use wreq::tls::session::{Key, TlsSession, TlsSessionCache};
 use wreq::tls::trust::CertStore;
 use wreq::{Client as HttpClient, Method, Proxy, redirect};
 
@@ -42,6 +45,88 @@ static TRANSPORT_MANAGER: LazyLock<TransportManager> = LazyLock::new(TransportMa
 // Most API responses fit within 2 MiB; inlining them skips DashMap, Mutex, and an
 // additional FFI round-trip that the streaming path would otherwise require.
 const INLINE_BODY_MAX: u64 = 2 * 1024 * 1024;
+
+// Bodies whose length is unknown up front (chunked transfer, or any compressed
+// response, since decoding drops Content-Length) are inlined opportunistically:
+// frames hyper has already delivered are collected without waiting on the network,
+// and if that completes the body under INLINE_BODY_MAX it is inlined exactly like a
+// known-length body. Otherwise the collected prefix is replayed ahead of the live
+// stream through a body handle. This mirrors Bun's fetch, which inlines a body only
+// when it has fully arrived by the time the response reaches JS, so streaming
+// responses never sit behind a timer.
+
+enum BufferedBody {
+    /// The whole body had already arrived and fits the inline limit.
+    Complete(Bytes),
+    /// Frames that were already available before the stream went pending or the
+    /// limit was exceeded.
+    Partial(Vec<Bytes>),
+}
+
+fn concat_chunks(chunks: Vec<Bytes>, total_len: usize) -> Bytes {
+    match chunks.len() {
+        0 => Bytes::new(),
+        1 => chunks.into_iter().next().unwrap(),
+        _ => {
+            let mut buf = Vec::with_capacity(total_len);
+            for chunk in chunks {
+                buf.extend_from_slice(&chunk);
+            }
+            Bytes::from(buf)
+        }
+    }
+}
+
+enum Drain {
+    Complete(Bytes),
+    LimitExceeded,
+    Pending,
+}
+
+/// Drain whatever the body stream can yield right now, never waiting on the network.
+///
+/// hyper hands the response to us as soon as the headers are parsed, while the
+/// connection task is often still delivering body frames it already has in its
+/// buffer (for chunked transfer the terminating chunk always needs one more poll).
+/// A single `yield_now` lets that task finish before we decide, which is a scheduler
+/// hop measured in microseconds, not a wait on I/O.
+async fn buffer_ready_body(stream: &mut ResponseBodyStream) -> wreq::Result<BufferedBody> {
+    let mut chunks: Vec<Bytes> = Vec::new();
+    let mut total_len = 0usize;
+    let mut yielded = false;
+
+    loop {
+        let drained = std::future::poll_fn(|cx| loop {
+            match stream.as_mut().poll_next(cx) {
+                Poll::Ready(Some(Ok(bytes))) => {
+                    total_len += bytes.len();
+                    chunks.push(bytes);
+                    if total_len as u64 > INLINE_BODY_MAX {
+                        return Poll::Ready(Ok(Drain::LimitExceeded));
+                    }
+                }
+                Poll::Ready(Some(Err(err))) => return Poll::Ready(Err(err)),
+                Poll::Ready(None) => {
+                    let chunks = std::mem::take(&mut chunks);
+                    return Poll::Ready(Ok(Drain::Complete(concat_chunks(chunks, total_len))));
+                }
+                // The stream registered our waker, but we are not going to wait for it.
+                Poll::Pending => return Poll::Ready(Ok(Drain::Pending)),
+            }
+        })
+        .await?;
+
+        match drained {
+            Drain::Complete(bytes) => return Ok(BufferedBody::Complete(bytes)),
+            Drain::LimitExceeded => return Ok(BufferedBody::Partial(chunks)),
+            Drain::Pending if !yielded => {
+                yielded = true;
+                tokio::task::yield_now().await;
+            }
+            Drain::Pending => return Ok(BufferedBody::Partial(chunks)),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TrustStoreMode {
@@ -189,7 +274,7 @@ impl SessionConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct TransportConfig {
     browser: Option<BrowserEmulation>,
     browser_os: Option<BrowserEmulationOS>,
@@ -280,10 +365,18 @@ struct SessionEntry {
 
 struct TransportManager {
     explicit: DashMap<String, Arc<TransportEntry>>,
+    // Pooled clients for requests that name a session by id without an explicit
+    // transport. Keyed by session id so sessions never share connections or TLS
+    // session state, and by config so per-request overrides get their own client.
+    implicit: Cache<(String, TransportConfig), Arc<ResolvedClient>>,
 }
 
 struct SessionManager {
-    cache: Cache<String, Arc<SessionEntry>>,
+    // Cookie jars live until dropSession(), which Session.close() and the JS
+    // finalizer for unreferenced Session objects both call. They used to sit in an
+    // idle-expiring cache, which silently handed any session that had been quiet
+    // for five minutes a fresh, empty jar on its next request.
+    sessions: DashMap<String, Arc<SessionEntry>>,
 }
 
 struct EphemeralClientManager {
@@ -301,7 +394,50 @@ struct BodyEventState {
     url: String,
 }
 
-static BODY_STREAMS: LazyLock<Cache<u64, Arc<Mutex<ResponseBodyStream>>>> = LazyLock::new(|| {
+// A streamed body is pulled off the connection by a pump task into a bounded buffer,
+// the way Node's Readable keeps reading up to its highWaterMark and Bun's fetch fills
+// its native response buffer between JS reads. hyper's body channel holds a single
+// frame and only reads more once it is polled, so without the pump each
+// readBodyChunk() call could return at most one frame, one FFI round trip per frame.
+const STREAM_BUFFER_BYTES: usize = 256 * 1024;
+
+// Upper bound on how many buffered frames one readBodyChunk() call merges.
+const STREAM_CHUNK_BUDGET: usize = 256 * 1024;
+
+// When a body is abandoned with data still unread, the pump keeps reading and discards
+// up to this much so the connection can go back to the pool; past it the body is dropped
+// and hyper closes the connection. undici's dump() draws the same line at 128 KiB; this
+// matches the read-ahead buffer so "fits in the buffer" and "worth draining" agree.
+const ABANDON_DRAIN_LIMIT: u64 = STREAM_BUFFER_BYTES as u64;
+
+struct BodyStreamState {
+    frames: mpsc::UnboundedReceiver<wreq::Result<Bytes>>,
+    /// Bytes the pump may still buffer. The pump takes permits per frame, the reader
+    /// returns them.
+    capacity: Arc<Semaphore>,
+    /// An error taken off the buffer while coalescing, returned by the next read.
+    pending_error: Option<wreq::Error>,
+}
+
+struct StoredBody {
+    state: Mutex<BodyStreamState>,
+    /// Fired when nothing will read the body any more: cancelBody() from JS, or the
+    /// entry being evicted. Explicit rather than relying on the value being dropped,
+    /// because the cache releases evicted values from its housekeeper, not inline.
+    abandon: CancellationToken,
+}
+
+impl Drop for StoredBody {
+    fn drop(&mut self) {
+        self.abandon.cancel();
+    }
+}
+
+fn buffer_permits(len: usize) -> u32 {
+    len.min(STREAM_BUFFER_BYTES) as u32
+}
+
+static BODY_STREAMS: LazyLock<Cache<u64, Arc<StoredBody>>> = LazyLock::new(|| {
     Cache::builder()
         .time_to_idle(Duration::from_secs(300))
         .build()
@@ -345,7 +481,45 @@ fn next_body_handle() -> u64 {
     NEXT_BODY_HANDLE.fetch_add(1, Ordering::Relaxed)
 }
 
+// Built trust stores, one per mode. Building one parses ~150 Mozilla roots plus the
+// system store into a BoringSSL X509_STORE, which costs milliseconds of CPU; the
+// result is immutable and cheap to clone (Arc), so it is built once per process.
+static CERT_STORES: LazyLock<DashMap<TrustStoreMode, CertStore>> = LazyLock::new(DashMap::new);
+
+// Isolated `fetch()` calls share one cached ephemeral client for speed, but a client's
+// TLS session cache would then carry session tickets from one call to the next, and the
+// server sees the second connection resume the first, linking two requests that are meant
+// to be independent. This cache stores nothing and returns nothing, so those connections
+// never resume. It leaves `pre_shared_key` (and therefore the ClientHello) untouched: a
+// browser opening its first connection has no session to resume either. Sessions and
+// explicit transports keep wreq's real LRU cache, where resumption is wanted.
+struct NoResumptionSessionCache;
+
+impl TlsSessionCache for NoResumptionSessionCache {
+    fn put(&self, _key: Key, _session: TlsSession) {}
+    fn pop(&self, _key: &Key) -> Option<TlsSession> {
+        None
+    }
+}
+
 fn build_cert_store(mode: TrustStoreMode) -> Result<CertStore> {
+    if let Some(store) = CERT_STORES.get(&mode) {
+        return Ok(store.clone());
+    }
+
+    // Concurrent cold requests must not all parse the same trust roots. Only
+    // immutable trust configuration is shared; connection state stays separate.
+    match CERT_STORES.entry(mode) {
+        dashmap::mapref::entry::Entry::Occupied(entry) => Ok(entry.get().clone()),
+        dashmap::mapref::entry::Entry::Vacant(entry) => {
+            let store = build_cert_store_uncached(mode)?;
+            entry.insert(store.clone());
+            Ok(store)
+        }
+    }
+}
+
+fn build_cert_store_uncached(mode: TrustStoreMode) -> Result<CertStore> {
     match mode {
         TrustStoreMode::Mozilla => CertStore::builder()
             .add_der_certs(webpki_root_certs::TLS_SERVER_ROOT_CERTS)
@@ -372,10 +546,114 @@ fn build_cert_store(mode: TrustStoreMode) -> Result<CertStore> {
     }
 }
 
-pub fn store_body_stream(stream: ResponseBodyStream) -> u64 {
+fn abandoned_body_is_drainable(content_length: Option<u64>, delivered: u64) -> bool {
+    match content_length {
+        Some(total) => total.saturating_sub(delivered) <= ABANDON_DRAIN_LIMIT,
+        None => true,
+    }
+}
+
+pub fn store_body_stream(mut stream: ResponseBodyStream, content_length: Option<u64>) -> u64 {
     let handle = next_body_handle();
-    BODY_STREAMS.insert(handle, Arc::new(Mutex::new(stream)));
+    let (tx, rx) = mpsc::unbounded_channel();
+    let capacity = Arc::new(Semaphore::new(STREAM_BUFFER_BYTES));
+    let abandon = CancellationToken::new();
+
+    let pump_capacity = capacity.clone();
+    let pump_abandon = abandon.clone();
+    HTTP_RUNTIME.spawn(async move {
+        let mut delivered: u64 = 0;
+        let mut drained: u64 = 0;
+        let mut draining = false;
+
+        loop {
+            if draining {
+                // Nobody will read this body. Discard the remainder up to the cap so
+                // the connection can be reused; past it, drop the stream and let hyper
+                // close the connection.
+                match stream.next().await {
+                    Some(Ok(bytes)) => {
+                        drained += bytes.len() as u64;
+                        if drained > ABANDON_DRAIN_LIMIT {
+                            break;
+                        }
+                    }
+                    _ => break,
+                }
+                continue;
+            }
+
+            let item = tokio::select! {
+                // The reader side is gone (cancelled from JS, or the entry was evicted).
+                _ = pump_abandon.cancelled() => {
+                    if abandoned_body_is_drainable(content_length, delivered) {
+                        draining = true;
+                        continue;
+                    }
+                    break;
+                }
+                item = stream.next() => match item {
+                    Some(item) => item,
+                    None => break,
+                },
+            };
+
+            let is_err = item.is_err();
+            if let Ok(bytes) = &item {
+                let permits = tokio::select! {
+                    _ = pump_abandon.cancelled() => None,
+                    permits = pump_capacity.acquire_many(buffer_permits(bytes.len())) => permits.ok(),
+                };
+                match permits {
+                    Some(permits) => permits.forget(),
+                    None => {
+                        // Abandoned while waiting for buffer room; this frame counts as drained.
+                        if abandoned_body_is_drainable(content_length, delivered) {
+                            drained += bytes.len() as u64;
+                            draining = true;
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                delivered += bytes.len() as u64;
+            }
+            if tx.send(item).is_err() || is_err {
+                break;
+            }
+        }
+    });
+
+    BODY_STREAMS.insert(
+        handle,
+        Arc::new(StoredBody {
+            state: Mutex::new(BodyStreamState {
+                frames: rx,
+                capacity,
+                pending_error: None,
+            }),
+            abandon,
+        }),
+    );
     handle
+}
+
+fn finish_body_stream_error(handle: u64, err: wreq::Error) -> anyhow::Error {
+    BODY_STREAMS.invalidate(&handle);
+    if let Some((_, state)) = BODY_EVENT_STATES.remove(&handle) {
+        (state.sink)(RequestEvent::Error {
+            timestamp_ms: 0,
+            message: format!("{:#}", err),
+        });
+    }
+    err.into()
+}
+
+fn finish_body_stream_end(handle: u64) {
+    BODY_STREAMS.invalidate(&handle);
+    if let Some((_, state)) = BODY_EVENT_STATES.remove(&handle) {
+        emit_body_complete(&state);
+    }
 }
 
 pub async fn read_body_chunk(handle: u64) -> Result<Option<Bytes>> {
@@ -383,34 +661,47 @@ pub async fn read_body_chunk(handle: u64) -> Result<Option<Bytes>> {
         .get(&handle)
         .ok_or_else(|| anyhow!("Body handle {} not found", handle))?;
 
-    let mut guard = stream.lock().await;
-    let next = guard.next().await;
+    let mut guard = stream.state.lock().await;
 
-    match next {
-        Some(Ok(bytes)) => {
-            if let Some(state) = BODY_EVENT_STATES.get(&handle) {
-                emit_body_progress(&state, bytes.len() as u64);
-            }
-            Ok(Some(bytes))
-        }
-        Some(Err(err)) => {
-            BODY_STREAMS.invalidate(&handle);
-            if let Some((_, state)) = BODY_EVENT_STATES.remove(&handle) {
-                (state.sink)(RequestEvent::Error {
-                    timestamp_ms: 0,
-                    message: format!("{:#}", err),
-                });
-            }
-            Err(err.into())
-        }
+    if let Some(err) = guard.pending_error.take() {
+        return Err(finish_body_stream_error(handle, err));
+    }
+
+    // Wait for one frame; this is the only point that blocks on the network.
+    let first = match guard.frames.recv().await {
+        Some(Ok(bytes)) => bytes,
+        Some(Err(err)) => return Err(finish_body_stream_error(handle, err)),
         None => {
-            BODY_STREAMS.invalidate(&handle);
-            if let Some((_, state)) = BODY_EVENT_STATES.remove(&handle) {
-                emit_body_complete(&state);
+            finish_body_stream_end(handle);
+            return Ok(None);
+        }
+    };
+    guard.capacity.add_permits(buffer_permits(first.len()) as usize);
+
+    // Then merge whatever the pump has already buffered, so a body that arrives in
+    // many small frames does not cost one FFI round trip per frame.
+    let mut total_len = first.len();
+    let mut chunks = vec![first];
+    while total_len < STREAM_CHUNK_BUDGET {
+        match guard.frames.try_recv() {
+            Ok(Ok(bytes)) => {
+                guard.capacity.add_permits(buffer_permits(bytes.len()) as usize);
+                total_len += bytes.len();
+                chunks.push(bytes);
             }
-            Ok(None)
+            Ok(Err(err)) => {
+                guard.pending_error = Some(err);
+                break;
+            }
+            Err(_) => break, // empty for now, or ended; the next read reports it
         }
     }
+
+    let bytes = concat_chunks(chunks, total_len);
+    if let Some(state) = BODY_EVENT_STATES.get(&handle) {
+        emit_body_progress(&state, bytes.len() as u64);
+    }
+    Ok(Some(bytes))
 }
 
 /// Read entire body into a single buffer. More efficient than streaming for small bodies.
@@ -419,12 +710,20 @@ pub async fn read_body_all(handle: u64) -> Result<Bytes> {
         .remove(&handle)
         .ok_or_else(|| anyhow!("Body handle {} not found", handle))?;
 
-    let mut guard = stream.lock().await;
+    let mut guard = stream.state.lock().await;
     let mut chunks: Vec<Bytes> = Vec::new();
     let mut total_len = 0usize;
 
-    while let Some(result) = guard.next().await {
-        let bytes = result?;
+    if let Some(err) = guard.pending_error.take() {
+        return Err(finish_body_stream_error(handle, err));
+    }
+
+    while let Some(result) = guard.frames.recv().await {
+        let bytes = match result {
+            Ok(bytes) => bytes,
+            Err(err) => return Err(finish_body_stream_error(handle, err)),
+        };
+        guard.capacity.add_permits(buffer_permits(bytes.len()) as usize);
         total_len += bytes.len();
         if let Some(state) = BODY_EVENT_STATES.get(&handle) {
             emit_body_progress(&state, bytes.len() as u64);
@@ -436,24 +735,13 @@ pub async fn read_body_all(handle: u64) -> Result<Bytes> {
         emit_body_complete(&state);
     }
 
-    // Fast path: single chunk or empty
-    if chunks.is_empty() {
-        return Ok(Bytes::new());
-    }
-    if chunks.len() == 1 {
-        return Ok(chunks.into_iter().next().unwrap());
-    }
-
-    // Multiple chunks: consolidate
-    let mut buf = Vec::with_capacity(total_len);
-    for chunk in chunks {
-        buf.extend_from_slice(&chunk);
-    }
-    Ok(Bytes::from(buf))
+    Ok(concat_chunks(chunks, total_len))
 }
 
 pub fn drop_body_stream(handle: u64) {
-    BODY_STREAMS.invalidate(&handle);
+    if let Some(body) = BODY_STREAMS.remove(&handle) {
+        body.abandon.cancel();
+    }
     BODY_EVENT_STATES.remove(&handle);
 }
 
@@ -461,7 +749,34 @@ impl TransportManager {
     fn new() -> Self {
         Self {
             explicit: DashMap::new(),
+            implicit: Cache::builder()
+                .time_to_idle(Duration::from_secs(300))
+                .support_invalidation_closures()
+                .build(),
         }
+    }
+
+    fn implicit_client_for(
+        &self,
+        session_id: &str,
+        config: TransportConfig,
+    ) -> Result<Arc<ResolvedClient>> {
+        let key = (session_id.to_owned(), config);
+        if let Some(resolved) = self.implicit.get(&key) {
+            return Ok(resolved);
+        }
+
+        let resolved = Arc::new(build_client(&key.1)?);
+        self.implicit.insert(key, resolved.clone());
+        Ok(resolved)
+    }
+
+    fn drop_implicit_clients(&self, session_id: &str) {
+        let session_id = session_id.to_owned();
+        // Only fails if the cache was built without closure invalidation support.
+        let _ = self
+            .implicit
+            .invalidate_entries_if(move |key, _| key.0 == session_id);
     }
 
     fn create_transport(&self, config: TransportConfig) -> Result<String> {
@@ -487,21 +802,24 @@ impl TransportManager {
 impl SessionManager {
     fn new() -> Self {
         Self {
-            cache: Cache::builder()
-                .time_to_idle(Duration::from_secs(300))
-                .build(),
+            sessions: DashMap::new(),
         }
     }
 
     fn jar_for(&self, session_id: &str) -> Result<Arc<Jar>> {
-        if let Some(entry) = self.cache.get(session_id) {
+        if let Some(entry) = self.sessions.get(session_id) {
             return Ok(entry.cookie_jar.clone());
         }
 
-        let entry = Arc::new(SessionEntry {
-            cookie_jar: Arc::new(Jar::default()),
-        });
-        self.cache.insert(session_id.to_string(), entry.clone());
+        let entry = self
+            .sessions
+            .entry(session_id.to_string())
+            .or_insert_with(|| {
+                Arc::new(SessionEntry {
+                    cookie_jar: Arc::new(Jar::default()),
+                })
+            })
+            .clone();
         Ok(entry.cookie_jar.clone())
     }
 
@@ -509,13 +827,13 @@ impl SessionManager {
         let entry = Arc::new(SessionEntry {
             cookie_jar: Arc::new(Jar::default()),
         });
-        self.cache.insert(session_id.clone(), entry);
+        self.sessions.insert(session_id.clone(), entry);
         Ok(session_id)
     }
 
     fn clear_session(&self, session_id: &str) -> Result<()> {
         let entry = self
-            .cache
+            .sessions
             .get(session_id)
             .ok_or_else(|| anyhow::anyhow!("Session '{}' not found", session_id))?;
         entry.cookie_jar.clear();
@@ -523,7 +841,7 @@ impl SessionManager {
     }
 
     fn drop_session(&self, session_id: &str) {
-        self.cache.invalidate(session_id);
+        self.sessions.remove(session_id);
     }
 }
 
@@ -541,16 +859,20 @@ impl EphemeralClientManager {
             return Ok(resolved);
         }
 
-        let resolved = Arc::new(build_ephemeral_client(&config)?);
-        self.cache.insert(config, resolved.clone());
-        Ok(resolved)
+        // Coalesce cold builds for the same configuration, while retaining the
+        // no-pooling and no-TLS-resumption policy of build_ephemeral_client.
+        self.cache
+            .try_get_with(config.clone(), || {
+                build_ephemeral_client(&config).map(Arc::new)
+            })
+            .map_err(|error| anyhow!("{error:#}"))
     }
 }
 
 pub async fn make_request(options: RequestOptions) -> Result<Response> {
     let transport_id = options.transport_id.clone();
 
-    // Resolve client: explicit transport > ephemeral cache > fresh client
+    // Resolve client: explicit transport > ephemeral cache > per-session implicit cache
     let resolved = if let Some(ref tid) = transport_id {
         TRANSPORT_MANAGER.get_transport(tid)?
     } else if options.ephemeral {
@@ -558,7 +880,7 @@ pub async fn make_request(options: RequestOptions) -> Result<Response> {
         EPHEMERAL_MANAGER.client_for(config)?
     } else {
         let config = TransportConfig::from_request(&options);
-        Arc::new(build_client(&config)?)
+        TRANSPORT_MANAGER.implicit_client_for(&options.session_id, config)?
     };
 
     // Resolve cookie jar: ephemeral gets a fresh jar, sessions share one
@@ -717,6 +1039,26 @@ async fn make_request_inner(
 
     let allows_body = response_allows_body(status, method.as_ref());
 
+    let emit_inline_events = |bytes_len: u64, content_length: Option<u64>| {
+        if let Some(sink) = event_sink.as_ref() {
+            sink(RequestEvent::BodyProgress {
+                timestamp_ms: start.elapsed().as_millis() as u64,
+                downloaded_bytes: bytes_len,
+                content_length,
+            });
+            sink(RequestEvent::BodyComplete {
+                timestamp_ms: start.elapsed().as_millis() as u64,
+                downloaded_bytes: bytes_len,
+                content_length,
+            });
+            sink(RequestEvent::Done {
+                timestamp_ms: start.elapsed().as_millis() as u64,
+                status,
+                url: final_url.clone(),
+            });
+        }
+    };
+
     let (body_handle, body_bytes) = if allows_body {
         let inline_eligible = content_length
             .map(|len| len <= INLINE_BODY_MAX)
@@ -725,40 +1067,45 @@ async fn make_request_inner(
         if inline_eligible {
             let bytes = response.bytes().await?;
             content_length = Some(bytes.len() as u64);
-            if let Some(sink) = event_sink.as_ref() {
-                sink(RequestEvent::BodyProgress {
-                    timestamp_ms: start.elapsed().as_millis() as u64,
-                    downloaded_bytes: bytes.len() as u64,
-                    content_length,
-                });
-                sink(RequestEvent::BodyComplete {
-                    timestamp_ms: start.elapsed().as_millis() as u64,
-                    downloaded_bytes: bytes.len() as u64,
-                    content_length,
-                });
-                sink(RequestEvent::Done {
-                    timestamp_ms: start.elapsed().as_millis() as u64,
-                    status,
-                    url: final_url.clone(),
-                });
-            }
+            emit_inline_events(bytes.len() as u64, content_length);
             (None, Some(bytes))
         } else {
-            let stream: ResponseBodyStream = Box::pin(response.bytes_stream());
-            let handle = store_body_stream(stream);
-            if let Some(sink) = event_sink.as_ref() {
-                BODY_EVENT_STATES.insert(
-                    handle,
-                    BodyEventState {
-                        sink: sink.clone(),
-                        content_length,
-                        downloaded_bytes: Arc::new(AtomicU64::new(0)),
-                        status,
-                        url: final_url.clone(),
-                    },
-                );
+            let mut stream: ResponseBodyStream = Box::pin(response.bytes_stream());
+
+            let buffered = if content_length.is_none() {
+                buffer_ready_body(&mut stream).await?
+            } else {
+                BufferedBody::Partial(Vec::new())
+            };
+
+            match buffered {
+                BufferedBody::Complete(bytes) => {
+                    content_length = Some(bytes.len() as u64);
+                    emit_inline_events(bytes.len() as u64, content_length);
+                    (None, Some(bytes))
+                }
+                BufferedBody::Partial(prefix) => {
+                    let stream: ResponseBodyStream = if prefix.is_empty() {
+                        stream
+                    } else {
+                        Box::pin(stream::iter(prefix.into_iter().map(Ok)).chain(stream))
+                    };
+                    let handle = store_body_stream(stream, content_length);
+                    if let Some(sink) = event_sink.as_ref() {
+                        BODY_EVENT_STATES.insert(
+                            handle,
+                            BodyEventState {
+                                sink: sink.clone(),
+                                content_length,
+                                downloaded_bytes: Arc::new(AtomicU64::new(0)),
+                                status,
+                                url: final_url.clone(),
+                            },
+                        );
+                    }
+                    (Some(handle), None)
+                }
             }
-            (Some(handle), None)
         }
     } else {
         if let Some(sink) = event_sink.as_ref() {
@@ -858,7 +1205,9 @@ fn build_ephemeral_client(config: &SessionConfig) -> Result<ResolvedClient> {
 
     let mut client_builder = HttpClient::builder()
         .emulation(emulation)
-        .pool_max_idle_per_host(0);
+        .pool_max_idle_per_host(0)
+        // Isolated fetches must not resume each other's TLS sessions (see the cache above).
+        .tls_session_cache(NoResumptionSessionCache);
 
     if let Some(proxy_url) = config.proxy.as_deref() {
         let proxy = Proxy::all(proxy_url).context("Failed to create proxy")?;
@@ -913,6 +1262,7 @@ pub fn clear_managed_session(session_id: &str) -> Result<()> {
 
 pub fn drop_managed_session(session_id: &str) {
     SESSION_MANAGER.drop_session(session_id);
+    TRANSPORT_MANAGER.drop_implicit_clients(session_id);
 }
 
 pub fn create_managed_transport(
@@ -974,6 +1324,21 @@ mod tests {
         include_str!("../../src/test/helpers/certs/default-paths-leaf.crt");
 
     static ENV_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
+
+    #[test]
+    fn managed_sessions_keep_their_jar_until_dropped() {
+        let id = format!("lifetime-{}", Uuid::new_v4());
+        create_managed_session(id.clone()).expect("create session");
+
+        let first = get_session_cookie_jar(&id).expect("jar");
+        let again = get_session_cookie_jar(&id).expect("jar again");
+        assert!(Arc::ptr_eq(&first, &again), "the jar must persist across lookups");
+
+        drop_managed_session(&id);
+        let fresh = get_session_cookie_jar(&id).expect("jar after drop");
+        assert!(!Arc::ptr_eq(&first, &fresh), "dropping the session must release its jar");
+        drop_managed_session(&id);
+    }
 
     #[test]
     fn cookie_origin_uri_maps_websocket_schemes_to_http() {
@@ -1038,6 +1403,48 @@ mod tests {
             capture_diagnostics: false,
             event_sink: None,
         }
+    }
+
+    #[test]
+    fn concurrent_ephemeral_clients_share_only_the_matching_configuration() {
+        let manager = EphemeralClientManager::new();
+        let mut options = base_request_options();
+        options.insecure = true;
+        let config = SessionConfig::from_request(&options);
+        let barrier = std::sync::Barrier::new(16);
+
+        let clients = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..16)
+                .map(|_| {
+                    let config = config.clone();
+                    let manager = &manager;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        manager.client_for(config).expect("build ephemeral client")
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+
+        for client in &clients[1..] {
+            assert!(
+                Arc::ptr_eq(&clients[0], client),
+                "cold callers must share one client build"
+            );
+        }
+        options.browser_os = Some(BrowserEmulationOS::Windows);
+        let other = manager
+            .client_for(SessionConfig::from_request(&options))
+            .unwrap();
+        assert!(
+            !Arc::ptr_eq(&clients[0], &other),
+            "different configurations must stay separate"
+        );
     }
 
     #[test]

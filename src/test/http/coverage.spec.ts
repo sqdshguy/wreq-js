@@ -456,11 +456,10 @@ describe("Session validation", () => {
 describe("Response helpers", () => {
   const makePayload = (overrides?: Partial<Record<string, unknown>>) => ({
     status: 200,
-    headers: [["X-Test", "alpha"]],
+    headers: ["X-Test", "alpha"],
     bodyHandle: null,
     bodyBytes: null,
     contentLength: null,
-    cookies: [],
     url: "http://example.com/final",
     ...overrides,
   });
@@ -482,11 +481,8 @@ describe("Response helpers", () => {
     const response = new Response(
       makePayload({
         status: 200,
-        headers: [["X-Test", "alpha"]],
-        cookies: [
-          ["session", "one"],
-          ["session", "two"],
-        ],
+        headers: ["X-Test", "alpha"],
+        cookies: ["session", "one", "session", "two"],
       }) as never,
       "http://example.com/final",
     );
@@ -539,7 +535,7 @@ describe("Response helpers", () => {
   test("supports blob and formData helpers", async () => {
     const blobResponse = new Response(
       makePayload({
-        headers: [["Content-Type", "text/plain"]],
+        headers: ["Content-Type", "text/plain"],
         bodyBytes: Buffer.from("blob-text"),
       }) as never,
       "http://example.com/final",
@@ -550,7 +546,7 @@ describe("Response helpers", () => {
 
     const formResponse = new Response(
       makePayload({
-        headers: [["Content-Type", "application/x-www-form-urlencoded;charset=UTF-8"]],
+        headers: ["Content-Type", "application/x-www-form-urlencoded;charset=UTF-8"],
         bodyBytes: Buffer.from("alpha=one&beta=two"),
       }) as never,
       "http://example.com/final",

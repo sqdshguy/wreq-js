@@ -15,6 +15,14 @@ For multi-step flows (like login sequences), use **sessions** to persist state.
 | Multi-step login or reuse cookies | Session | Shared session context |
 | Parallel jobs that must stay isolated | Ephemeral or per-job session | Avoid cross-talk between tasks |
 
+### What request isolation covers
+
+By default, ephemeral calls use separate cookie jars and network connections. They do not resume TLS sessions from earlier calls. Parsed trust roots and transport configuration can be cached without sharing cookies, live connections, or TLS tickets.
+
+Passing a shared `transport` opts into connection and TLS reuse, even when you call `fetch()` without a Session. It keeps cookie jars separate, but the server can link requests through the reused connection.
+
+Request isolation does not hide your IP address or remove identifiers you send in URLs, headers, or request bodies.
+
 ## Creating a session
 
 ```typescript
