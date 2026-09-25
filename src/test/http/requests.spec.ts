@@ -221,6 +221,17 @@ describe("HTTP requests", () => {
     assert.strictEqual(response.headers.get("location"), httpUrl("/json"));
   });
 
+  test("keeps non-ASCII Location header as latin1", { skip: !isLocalHttpBase }, async () => {
+    const response = await wreqFetch(httpUrl("/redirect/utf8"), {
+      browser: "chrome_142",
+      redirect: "manual",
+      timeout: 10_000,
+    });
+
+    assert.strictEqual(response.status, 302);
+    assert.strictEqual(response.headers.get("location"), Buffer.from("/café", "utf8").toString("latin1"));
+  });
+
   test("rejects when redirect mode is error", { skip: !isLocalHttpBase }, async () => {
     await assert.rejects(
       wreqFetch(httpUrl("/redirect"), {

@@ -674,9 +674,7 @@ async fn make_request_inner(
     let raw_headers = response.headers();
     let mut response_headers = Vec::with_capacity(raw_headers.len());
     for (key, value) in raw_headers {
-        if let Ok(value_str) = value.to_str() {
-            response_headers.push((key.as_str().to_owned(), value_str.to_owned()));
-        }
+        response_headers.push((key.as_str().to_owned(), header_value_to_string(value)));
     }
 
     // Extract cookies into a Vec
@@ -890,6 +888,16 @@ fn build_ephemeral_client(config: &SessionConfig) -> Result<ResolvedClient> {
         http_client,
         emulation_orig_headers,
     })
+}
+
+// Header values are bytes, not text. Decode them as latin1 like the fetch
+// spec (and undici) do, so non-ASCII values such as a raw UTF-8 Location
+// survive instead of being dropped.
+fn header_value_to_string(value: &wreq::header::HeaderValue) -> String {
+    match value.to_str() {
+        Ok(s) => s.to_owned(),
+        Err(_) => value.as_bytes().iter().map(|&b| b as char).collect(),
+    }
 }
 
 fn response_allows_body(status: u16, method: &str) -> bool {

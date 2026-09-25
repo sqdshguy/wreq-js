@@ -359,6 +359,14 @@ export async function startLocalTestServer(): Promise<LocalTestServer> {
       return;
     }
 
+    if (path === "/redirect/utf8") {
+      // Node writes header strings as latin1, so this puts raw UTF-8 bytes on the wire
+      res.statusCode = 302;
+      res.setHeader("Location", Buffer.from("/café", "utf8").toString("latin1"));
+      res.end();
+      return;
+    }
+
     const delayMatch = path.match(/^\/delay\/(\d+)/);
     if (delayMatch) {
       const seconds = Number(delayMatch[1]);
