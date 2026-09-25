@@ -24,7 +24,10 @@ bytes = "1.12.1"
 cookie = "0.18.2"
 
 # Neon for Node.js bindings
-neon = { version = "1.1.1", default-features = false, features = ["napi-6"] }
+neon = { version = "1.1.1", default-features = false, features = ["napi-6", "sys"] }
+
+# Resolves napi_create_external_buffer from the host for zero-copy bodies (see external_buffer.rs)
+libloading = "0.8"
 
 # Concurrent maps
 dashmap = "6.2.1"

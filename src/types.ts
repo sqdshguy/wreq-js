@@ -825,32 +825,33 @@ export interface NativeResponse {
   status: number;
 
   /**
-   * Response headers as [name, value] tuples.
-   * Header names are normalized to lowercase.
+   * Response headers as a flat [name, value, name, value, ...] array, the same
+   * shape as Node's `IncomingMessage.rawHeaders`. Header names are lowercase.
    */
-  headers: HeaderTuple[];
+  headers: string[];
 
   /**
    * Handle for streaming response body chunks from the native layer.
-   * When `null`, the response does not have a body (e.g., HEAD/204/304).
+   * Absent or `null` when the response has no body (e.g., HEAD/204/304) or the
+   * body was inlined.
    */
-  bodyHandle: number | null;
+  bodyHandle?: number | null;
 
   /**
    * Inline body buffer returned for small payloads. When present, `bodyHandle`
-   * will be `null` to avoid a second native round-trip to read the body.
+   * is absent to avoid a second native round-trip to read the body.
    */
-  bodyBytes: Buffer | null;
+  bodyBytes?: Buffer | null;
 
   /**
    * Optional Content-Length hint reported by the server after decompression.
    */
-  contentLength: number | null;
+  contentLength?: number | null;
 
   /**
-   * Cookies set by the server as [name, value] tuples.
+   * Cookies set by the server as a flat [name, value, ...] array; absent when none.
    */
-  cookies: HeaderTuple[];
+  cookies?: string[];
 
   /**
    * Final URL after following any redirects.
