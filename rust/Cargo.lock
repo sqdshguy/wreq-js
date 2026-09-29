@@ -1999,6 +1999,7 @@ dependencies = [
  "cookie",
  "dashmap",
  "futures-util",
+ "libloading",
  "moka",
  "neon",
  "serde",

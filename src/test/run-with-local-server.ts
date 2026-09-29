@@ -64,7 +64,8 @@ async function main() {
   env.SSL_CERT_FILE = resolve(testDir, "helpers", "certs", "default-paths-root.crt");
   env.SSL_CERT_DIR = mkdtempSync(resolve(tmpdir(), "wreq-js-empty-cert-dir-"));
 
-  const nodeArgs = ["--import", "tsx", "--test", ...defaultTestFiles, ...normalizedExtraArgs];
+  // --expose-gc lets lifecycle specs force a collection and observe finalizers.
+  const nodeArgs = ["--import", "tsx", "--expose-gc", "--test", ...defaultTestFiles, ...normalizedExtraArgs];
   const testProcess = spawn(process.execPath, nodeArgs, {
     stdio: "inherit",
     env,
