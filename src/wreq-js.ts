@@ -127,8 +127,40 @@ interface NativeRequestOptions {
   onRequestEvent?: (event: RequestEvent) => void;
 }
 
+// Rarely used request fields travel in one optional object; the native side only probes
+// it when present, so the pooled-session hot path passes `undefined` here.
+interface NativeRequestExtras {
+  browser?: BrowserProfile;
+  os?: EmulationOS;
+  emulationJson?: string;
+  proxy?: string;
+  trustStore?: TrustStoreMode;
+  onRequestEvent?: (event: RequestEvent) => void;
+}
+
+// Bit flags for the positional native request call; must match rust/src/lib.rs.
+const FLAG_EPHEMERAL = 1;
+const FLAG_DISABLE_DEFAULT_HEADERS = 1 << 1;
+const FLAG_INSECURE = 1 << 2;
+const FLAG_NO_COMPRESS = 1 << 3;
+const FLAG_CAPTURE_DIAGNOSTICS = 1 << 4;
+const FLAG_CANCELLABLE = 1 << 5;
+const FLAG_REDIRECT_MANUAL = 1 << 6;
+const FLAG_REDIRECT_ERROR = 1 << 7;
+
 let nativeBinding: {
-  request: (options: NativeRequestOptions, requestId: number, enableCancellation?: boolean) => Promise<NativeResponse>;
+  request: (
+    url: string,
+    method: string,
+    sessionId: string,
+    requestId: number,
+    flags: number,
+    timeout: number,
+    headers: string[] | undefined,
+    body: Buffer | undefined,
+    transportId: string | undefined,
+    extras: NativeRequestExtras | undefined,
+  ) => Promise<NativeResponse>;
   cancelRequest: (requestId: number) => void;
   readBodyChunk: (handleId: number) => Promise<Buffer | null>;
   readBodyAll: (handleId: number) => Promise<Buffer>;
@@ -149,6 +181,7 @@ let nativeBinding: {
   dropTransport: (transportId: string) => void;
   getOperatingSystems?: () => string[];
   getEmulationHeaders?: (browser: string, os: string) => HeaderTuple[];
+  configureRuntime?: (options: { externalBuffers?: boolean }) => void;
 };
 
 let cachedProfiles: BrowserProfile[] | undefined;
@@ -276,6 +309,20 @@ function loadNativeBinding() {
 
 nativeBinding = loadNativeBinding();
 
+// Large bodies can arrive as external buffers that own the native allocation instead
+// of being zero-filled and copied. That is on for Node, whose collector accounts
+// external memory itself. It is off for Bun: JSC cannot see those bytes, so under
+// load it collected them late and peak memory grew 3-4x, and reporting them through
+// napi_adjust_external_memory only pushed its collection threshold further out.
+// WREQ_EXTERNAL_BUFFERS=1|0 overrides the default.
+const externalBuffersOverride = process.env.WREQ_EXTERNAL_BUFFERS;
+nativeBinding.configureRuntime?.({
+  externalBuffers:
+    externalBuffersOverride !== undefined
+      ? externalBuffersOverride !== "0"
+      : typeof (globalThis as { Bun?: unknown }).Bun === "undefined",
+});
+
 const websocketFinalizer =
   typeof FinalizationRegistry === "function"
     ? new FinalizationRegistry<NativeWebSocketConnection>((connection: NativeWebSocketConnection) => {
@@ -284,6 +331,36 @@ const websocketFinalizer =
     : undefined;
 
 type NativeBodyHandle = { id: number; released: boolean };
+
+// Native session state (cookie jar, and the transport a createSession() call built for it)
+// is addressed by id and lives in the addon until dropped. Session.close() drops it
+// explicitly; this finalizer drops it for Session objects that were never closed, the same
+// way undici cancels the bodies of collected Response objects. The token doubles as the
+// held value so close() can mark the state released and unregister it.
+type SessionNativeState = { id: string; transportId?: string; ownsTransport: boolean; released: boolean };
+
+const sessionFinalizer =
+  typeof FinalizationRegistry === "function"
+    ? new FinalizationRegistry<SessionNativeState>((state: SessionNativeState) => {
+        if (state.released) {
+          return;
+        }
+
+        state.released = true;
+        try {
+          nativeBinding.dropSession(state.id);
+        } catch {
+          // Best-effort cleanup; ignore binding-level failures.
+        }
+        if (state.ownsTransport && state.transportId) {
+          try {
+            nativeBinding.dropTransport(state.transportId);
+          } catch {
+            // Best-effort cleanup; ignore binding-level failures.
+          }
+        }
+      })
+    : undefined;
 
 const bodyHandleFinalizer =
   typeof FinalizationRegistry === "function"
@@ -693,14 +770,34 @@ type ResponseType = "basic" | "cors" | "error" | "opaque" | "opaqueredirect";
 function cloneNativeResponse(payload: NativeResponse): NativeResponse {
   return {
     status: payload.status,
-    headers: payload.headers.map(([name, value]): HeaderTuple => [name, value]),
-    bodyHandle: payload.bodyHandle,
-    bodyBytes: payload.bodyBytes,
-    contentLength: payload.contentLength,
-    cookies: payload.cookies.map(([name, value]): HeaderTuple => [name, value]),
+    headers: payload.headers.slice(),
+    bodyHandle: payload.bodyHandle ?? null,
+    bodyBytes: payload.bodyBytes ?? null,
+    contentLength: payload.contentLength ?? null,
+    ...(payload.cookies !== undefined && { cookies: payload.cookies.slice() }),
     url: payload.url,
     diagnostics: payload.diagnostics ? { ...payload.diagnostics } : null,
   };
+}
+
+// The native layer reports headers the way Node's HTTP parser does, as a flat
+// [name, value, name, value, ...] array; it becomes a Headers object only on access.
+function headerTuplesFromFlat(flat: readonly string[]): HeaderTuple[] {
+  const tuples: HeaderTuple[] = [];
+  for (let i = 0; i + 1 < flat.length; i += 2) {
+    tuples.push([flat[i] as string, flat[i + 1] as string]);
+  }
+  return tuples;
+}
+
+function flattenHeaderTuples(tuples: readonly HeaderTuple[]): string[] {
+  const flat: string[] = new Array(tuples.length * 2);
+  for (let i = 0; i < tuples.length; i += 1) {
+    const tuple = tuples[i] as HeaderTuple;
+    flat[i * 2] = tuple[0];
+    flat[i * 2 + 1] = tuple[1];
+  }
+  return flat;
 }
 
 function releaseNativeBody(handle: NativeBodyHandle): void {
@@ -728,9 +825,11 @@ function markNativeBodyReleased(handle: NativeBodyHandle): void {
   bodyHandleFinalizer?.unregister(handle);
 }
 
-function createNativeBodyStream(handle: NativeBodyHandle): ReadableStream<Uint8Array> {
+function createNativeBodyStream(handle: NativeBodyHandle, onFirstUse?: () => void): ReadableStream<Uint8Array> {
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
+      onFirstUse?.();
+      onFirstUse = undefined;
       try {
         const chunk = await nativeBinding.readBodyChunk(handle.id);
 
@@ -805,9 +904,10 @@ export class Response {
   private readonly payload: NativeResponse;
   private readonly requestUrl: string;
   private redirectedMemo: boolean | undefined;
-  private readonly headersInit: HeaderTuple[];
+  private readonly headersInit: readonly string[];
   private headersInstance: Headers | null;
-  private readonly cookiesInit: HeaderTuple[];
+  private readonly cookiesInit: readonly string[] | undefined;
+  private readonly bodyHandleId: number | null;
   private cookiesRecord: Record<string, string | string[]> | null;
   private inlineBody: Buffer | null;
   private bodySource: ReadableStream<Uint8Array> | null;
@@ -829,6 +929,7 @@ export class Response {
     this.cookiesRecord = null;
     this.contentLength = this.payload.contentLength ?? null;
     this.inlineBody = this.payload.bodyBytes ?? null;
+    this.bodyHandleId = this.payload.bodyHandle ?? null;
     this.nativeHandle = null;
 
     if (typeof bodySource !== "undefined") {
@@ -839,11 +940,11 @@ export class Response {
       // Inline body provided by native layer
       this.bodySource = null;
       this.nativeHandleAvailable = false;
-    } else if (this.payload.bodyHandle !== null) {
+    } else if (this.bodyHandleId !== null) {
       // Defer stream creation - we might use fast path instead
       this.bodySource = null;
       this.nativeHandleAvailable = true;
-      this.nativeHandle = { id: this.payload.bodyHandle, released: false };
+      this.nativeHandle = { id: this.bodyHandleId, released: false };
       bodyHandleFinalizer?.register(this, this.nativeHandle, this.nativeHandle);
     } else {
       this.bodySource = null;
@@ -874,7 +975,7 @@ export class Response {
 
   get headers(): Headers {
     if (!this.headersInstance) {
-      this.headersInstance = new Headers(this.headersInit);
+      this.headersInstance = new Headers(headerTuplesFromFlat(this.headersInit));
     }
     return this.headersInstance;
   }
@@ -882,7 +983,10 @@ export class Response {
   get cookies(): Record<string, string | string[]> {
     if (!this.cookiesRecord) {
       const record: Record<string, string | string[]> = Object.create(null);
-      for (const [name, value] of this.cookiesInit) {
+      const flat = this.cookiesInit ?? [];
+      for (let i = 0; i + 1 < flat.length; i += 2) {
+        const name = flat[i] as string;
+        const value = flat[i + 1] as string;
         const existing = record[name];
         if (existing === undefined) {
           record[name] = value;
@@ -910,18 +1014,26 @@ export class Response {
       });
     }
 
-    if (this.inlineBody === null && this.payload.bodyHandle === null && this.bodySource === null) {
+    if (this.inlineBody === null && this.bodyHandleId === null && this.bodySource === null) {
       return null;
     }
 
     // Lazily create the stream if needed (disables fast path)
-    if (this.bodySource === null && this.nativeHandleAvailable && this.payload.bodyHandle !== null) {
+    if (this.bodySource === null && this.nativeHandleAvailable && this.bodyHandleId !== null) {
       if (this.nativeHandle) {
         bodyHandleFinalizer?.unregister(this.nativeHandle);
       }
-      const handle = this.nativeHandle ?? { id: this.payload.bodyHandle, released: false };
+      const handle = this.nativeHandle ?? { id: this.bodyHandleId, released: false };
       this.nativeHandle = handle;
-      this.bodySource = createNativeBodyStream(handle);
+      // Native streams can mark first use directly, without a forwarding stream.
+      const source = createNativeBodyStream(handle, () => {
+        // clone() may have replaced this source with a tee branch before the pull.
+        if (this.bodySource === source) {
+          this.bodyUsed = true;
+        }
+      });
+      this.bodySource = source;
+      this.bodyStream = source;
       this.nativeHandleAvailable = false;
     }
 
@@ -1006,11 +1118,11 @@ export class Response {
     }
 
     // If we still have the native handle (fast path), we need to create the stream first
-    if (this.nativeHandleAvailable && this.payload.bodyHandle !== null) {
+    if (this.nativeHandleAvailable && this.bodyHandleId !== null) {
       if (this.nativeHandle) {
         bodyHandleFinalizer?.unregister(this.nativeHandle);
       }
-      const handle = this.nativeHandle ?? { id: this.payload.bodyHandle, released: false };
+      const handle = this.nativeHandle ?? { id: this.bodyHandleId, released: false };
       this.nativeHandle = handle;
       this.bodySource = createNativeBodyStream(handle);
       this.nativeHandleAvailable = false;
@@ -1046,10 +1158,10 @@ export class Response {
     }
 
     // Fast path: if native handle is still available, read entire body in one Rust call
-    if (this.nativeHandleAvailable && this.payload.bodyHandle !== null) {
+    if (this.nativeHandleAvailable && this.bodyHandleId !== null) {
       this.nativeHandleAvailable = false;
       try {
-        return await nativeBinding.readBodyAll(this.payload.bodyHandle);
+        return await nativeBinding.readBodyAll(this.bodyHandleId);
       } catch (error) {
         // Handle already consumed or error
         if (String(error).includes("Body handle") && String(error).includes("not found")) {
@@ -1096,12 +1208,36 @@ export class Response {
   }
 }
 
+// A Transport owns a native client and its connection pool until dropTransport().
+// close() drops it explicitly; this finalizer drops it for Transport objects that were
+// never closed, the same way sessions are handled above.
+type TransportNativeState = { id: string; released: boolean };
+
+const transportFinalizer =
+  typeof FinalizationRegistry === "function"
+    ? new FinalizationRegistry<TransportNativeState>((state: TransportNativeState) => {
+        if (state.released) {
+          return;
+        }
+
+        state.released = true;
+        try {
+          nativeBinding.dropTransport(state.id);
+        } catch {
+          // Best-effort cleanup; ignore binding-level failures.
+        }
+      })
+    : undefined;
+
 export class Transport {
   readonly id: string;
   private disposed = false;
+  private readonly nativeState: TransportNativeState;
 
   constructor(id: string) {
     this.id = id;
+    this.nativeState = { id, released: false };
+    transportFinalizer?.register(this, this.nativeState, this.nativeState);
   }
 
   get closed(): boolean {
@@ -1114,6 +1250,9 @@ export class Transport {
     }
 
     this.disposed = true;
+    // Explicit close owns the cleanup from here; the finalizer must not repeat it.
+    this.nativeState.released = true;
+    transportFinalizer?.unregister(this.nativeState);
 
     try {
       nativeBinding.dropTransport(this.id);
@@ -1131,10 +1270,18 @@ export class Session implements SessionHandle {
   readonly id: string;
   private disposed = false;
   private readonly defaults: SessionDefaults;
+  private readonly nativeState: SessionNativeState;
 
   constructor(id: string, defaults: SessionDefaults) {
     this.id = id;
     this.defaults = defaults;
+    this.nativeState = {
+      id,
+      ...(defaults.transportId !== undefined && { transportId: defaults.transportId }),
+      ownsTransport: defaults.ownsTransport ?? false,
+      released: false,
+    };
+    sessionFinalizer?.register(this, this.nativeState, this.nativeState);
   }
 
   get closed(): boolean {
@@ -1304,6 +1451,10 @@ export class Session implements SessionHandle {
     this.disposed = true;
     const transportId = this.defaults.transportId;
     const ownsTransport = this.defaults.ownsTransport;
+
+    // Explicit close owns the cleanup from here; the finalizer must not repeat it.
+    this.nativeState.released = true;
+    sessionFinalizer?.unregister(this.nativeState);
 
     try {
       nativeBinding.dropSession(this.id);
@@ -2493,6 +2644,53 @@ function applyNativeEmulationMode(
   }
 }
 
+function callNativeRequest(
+  options: NativeRequestOptions,
+  requestId: number,
+  cancellable: boolean,
+): Promise<NativeResponse> {
+  let flags = 0;
+  if (options.ephemeral) flags |= FLAG_EPHEMERAL;
+  if (options.disableDefaultHeaders) flags |= FLAG_DISABLE_DEFAULT_HEADERS;
+  if (options.insecure) flags |= FLAG_INSECURE;
+  if (options.compress === false) flags |= FLAG_NO_COMPRESS;
+  if (options.captureDiagnostics) flags |= FLAG_CAPTURE_DIAGNOSTICS;
+  if (cancellable) flags |= FLAG_CANCELLABLE;
+  if (options.redirect === "manual") flags |= FLAG_REDIRECT_MANUAL;
+  else if (options.redirect === "error") flags |= FLAG_REDIRECT_ERROR;
+
+  let extras: NativeRequestExtras | undefined;
+  if (
+    options.browser !== undefined ||
+    options.os !== undefined ||
+    options.emulationJson !== undefined ||
+    options.proxy !== undefined ||
+    options.trustStore !== undefined ||
+    options.onRequestEvent !== undefined
+  ) {
+    extras = {};
+    if (options.browser !== undefined) extras.browser = options.browser;
+    if (options.os !== undefined) extras.os = options.os;
+    if (options.emulationJson !== undefined) extras.emulationJson = options.emulationJson;
+    if (options.proxy !== undefined) extras.proxy = options.proxy;
+    if (options.trustStore !== undefined) extras.trustStore = options.trustStore;
+    if (options.onRequestEvent !== undefined) extras.onRequestEvent = options.onRequestEvent;
+  }
+
+  return nativeBinding.request(
+    options.url,
+    options.method,
+    options.sessionId,
+    requestId,
+    flags,
+    options.timeout ?? DEFAULT_REQUEST_TIMEOUT_MS,
+    options.headers ? flattenHeaderTuples(options.headers) : undefined,
+    options.body,
+    options.transportId,
+    extras,
+  );
+}
+
 async function dispatchRequest(
   options: NativeRequestOptions,
   requestUrl: string,
@@ -2504,7 +2702,7 @@ async function dispatchRequest(
     let payload: NativeResponse;
 
     try {
-      payload = (await nativeBinding.request(options, requestId, false)) as NativeResponse;
+      payload = await callNativeRequest(options, requestId, false);
     } catch (error) {
       if (error instanceof RequestError) {
         throw error;
@@ -2528,7 +2726,7 @@ async function dispatchRequest(
   // (impossible here since we checked `!signal` above). Cast is safe; avoids non-null assertion lint.
   const abortHandler = setupAbort(signal, cancelNative) as AbortHandler;
 
-  const pending = Promise.race([nativeBinding.request(options, requestId, true), abortHandler.promise]);
+  const pending = Promise.race([callNativeRequest(options, requestId, true), abortHandler.promise]);
 
   let payload: NativeResponse;
 
