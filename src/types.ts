@@ -509,6 +509,46 @@ export interface RequestInit {
 }
 
 /**
+ * Options for {@link randomProfile}.
+ */
+export interface RandomProfileOptions {
+  /**
+   * Browser families to choose from.
+   * @default ['chrome', 'edge', 'firefox', 'opera', 'safari']
+   */
+  families?: readonly BrowserAlias[];
+
+  /**
+   * How many of the newest profiles in each family to choose from.
+   * @default 2
+   */
+  latest?: number;
+
+  /**
+   * Operating systems to choose from. A family is only paired with an OS it actually
+   * ships on (Safari with macOS, `safari_ios` with iOS, and so on), so families with
+   * no OS left in this list are skipped.
+   * @default ['windows', 'macos', 'linux']
+   */
+  os?: readonly EmulationOS[];
+
+  /**
+   * Source of randomness, returning a number in [0, 1).
+   * @default Math.random
+   */
+  random?: () => number;
+}
+
+/**
+ * A browser profile and operating system that go together, as returned by
+ * {@link randomProfile}. Spread it into {@link createSession} or {@link fetch} options.
+ */
+export interface RandomProfile {
+  browser: BrowserProfile;
+  os: EmulationOS;
+}
+
+/**
  * Configuration for {@link createSession}.
  */
 export interface CreateSessionOptions {

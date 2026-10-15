@@ -81,6 +81,21 @@ Pin a concrete profile when you need a fingerprint that never moves, and use
 The default `browser` is the `chrome` alias, so requests that do not set `browser` track
 the newest Chrome profile rather than a pinned version that goes stale over time.
 
+## Rotating profiles
+
+`randomProfile()` picks one of the newest profiles from a set of families and pairs it
+with an operating system that browser actually ships on, so you never send Safari on
+Windows or a years-old Chrome. Pick once per session:
+
+```typescript
+import { createSession, randomProfile } from 'wreq-js';
+
+const session = await createSession({ ...randomProfile() });
+```
+
+See [`randomProfile()`](/api-reference/utilities#randomprofile) for the options and the
+browser-to-OS table.
+
 ## Operating systems
 
 Different operating systems have different header values and behaviors. Use the `os` option to emulate a specific platform:

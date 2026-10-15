@@ -29,16 +29,9 @@ console.log(profiles);
 
 ### Using a random profile
 
-```typescript
-import { fetch, getProfiles } from 'wreq-js';
-
-const profiles = getProfiles();
-const randomProfile = profiles[Math.floor(Math.random() * profiles.length)];
-
-const response = await fetch('https://example.com', {
-  browser: randomProfile,
-});
-```
+Picking from `getProfiles()` directly mixes years-old versions with current ones and
+leaves the OS to chance, which produces fingerprints no real browser sends. Use
+[`randomProfile()`](#randomprofile) instead.
 
 ---
 
@@ -113,6 +106,78 @@ resolveProfile('firefox_143'); // 'firefox_143'
 An alias resolves against the profile set shipped with your installed version of wreq-js,
 so the result moves when you upgrade. Log it when you need to know which fingerprint a
 given run actually used.
+
+---
+
+## randomProfile()
+
+Pick a random browser profile together with an operating system that browser actually
+ships on.
+
+### Signature
+
+```typescript
+function randomProfile(options?: RandomProfileOptions): RandomProfile
+
+interface RandomProfileOptions {
+  families?: BrowserAlias[]; // default: ['chrome', 'edge', 'firefox', 'opera', 'safari']
+  latest?: number;           // newest profiles per family to choose from, default 2
+  os?: EmulationOS[];        // default: ['windows', 'macos', 'linux']
+  random?: () => number;     // default: Math.random
+}
+
+interface RandomProfile {
+  browser: BrowserProfile;
+  os: EmulationOS;
+}
+```
+
+### Returns
+
+A `{ browser, os }` pair to spread into `createSession()`, `createTransport()` or `fetch()`
+options.
+
+A family is chosen first, then one of its newest `latest` profiles, then one of the
+operating systems it runs on, each uniformly at random. Picks are not weighted by market
+share. Each family is only paired with platforms it really ships on:
+
+| Family | Operating systems |
+| ------ | ----------------- |
+| `chrome`, `edge`, `firefox` | windows, macos, linux, android |
+| `opera` | windows, macos |
+| `firefox_private` | windows, macos, linux |
+| `safari` | macos |
+| `safari_ios`, `safari_ipad` | ios |
+| `firefox_android`, `okhttp` | android |
+
+Chrome, Edge and Firefox are never paired with iOS: on iOS they use WebKit's network
+stack, so their own TLS fingerprint with an iOS User-Agent is a combination no real
+browser produces.
+
+### Example
+
+```typescript
+import { createSession, randomProfile } from 'wreq-js';
+
+// One pick per session
+const session = await createSession({ ...randomProfile() });
+
+// Newest Chrome or Safari, phones only
+const mobile = randomProfile({
+  families: ['chrome', 'safari_ios'],
+  os: ['android', 'ios'],
+  latest: 1,
+});
+```
+
+<Warning>
+Keep a pick for the whole session. A fingerprint that changes between requests on the
+same cookies or IP stands out more than a fixed one.
+</Warning>
+
+Throws `RequestError` for an unknown family or OS, a `latest` that is not a positive
+integer, or options that leave no family with an allowed OS (such as `safari` with only
+`windows`).
 
 ---
 

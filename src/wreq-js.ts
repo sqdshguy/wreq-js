@@ -28,6 +28,8 @@ import type {
   LegacyWebSocketOptions,
   NativeResponse,
   NativeWebSocketConnection,
+  RandomProfile,
+  RandomProfileOptions,
   RequestDiagnostics,
   RequestEvent,
   RequestOptions,
@@ -155,6 +157,7 @@ let cachedProfiles: BrowserProfile[] | undefined;
 let cachedProfileSet: Set<string> | undefined;
 let cachedOperatingSystems: EmulationOS[] | undefined;
 let cachedOperatingSystemSet: Set<string> | undefined;
+let cachedProfilesByFamily: Map<BrowserAlias, BrowserProfile[]> | undefined;
 const cachedEmulationHeaders = new Map<string, HeaderTuple[]>();
 
 function detectLibc(): "gnu" | "musl" | undefined {
@@ -314,6 +317,28 @@ const DEFAULT_OS: EmulationOS = "macos";
 const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
 const DEFAULT_TRUST_STORE: TrustStoreMode = "combined";
 const SUPPORTED_OSES: readonly EmulationOS[] = ["windows", "macos", "linux", "android", "ios"];
+
+// The operating systems each browser family really ships on, for randomProfile(). Safari,
+// safari_ios/ipad, firefox_android and okhttp ignore the os option and always present
+// their own platform; opera and firefox_private fall back to macOS for platforms they do
+// not cover. Chrome, Edge and Firefox on iOS are left out because there they run on
+// WebKit's network stack, so their own TLS fingerprint with an iOS User-Agent would be a
+// combination no real browser produces.
+const BROWSER_FAMILY_OSES: Record<BrowserAlias, readonly EmulationOS[]> = {
+  chrome: ["windows", "macos", "linux", "android"],
+  edge: ["windows", "macos", "linux", "android"],
+  firefox: ["windows", "macos", "linux", "android"],
+  firefox_android: ["android"],
+  firefox_private: ["windows", "macos", "linux"],
+  okhttp: ["android"],
+  opera: ["windows", "macos"],
+  safari: ["macos"],
+  safari_ios: ["ios"],
+  safari_ipad: ["ios"],
+};
+
+const RANDOM_PROFILE_FAMILIES: readonly BrowserAlias[] = ["chrome", "edge", "firefox", "opera", "safari"];
+const RANDOM_PROFILE_OSES: readonly EmulationOS[] = ["windows", "macos", "linux"];
 const UTF8_DECODER = new TextDecoder("utf-8");
 
 type SessionDefaults = {
@@ -3031,6 +3056,109 @@ export function resolveProfile(browser: BrowserProfile | BrowserAlias): BrowserP
     : (browser as BrowserProfile);
 }
 
+function compareProfileVersions(a: string, b: string): number {
+  const left = a.split(".").map(Number);
+  const right = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const diff = (left[i] ?? 0) - (right[i] ?? 0);
+    if (diff !== 0) {
+      return diff;
+    }
+  }
+  return 0;
+}
+
+// Profiles grouped by family, oldest first. A profile belongs to the longest alias it
+// starts with followed by a version, so firefox_android_135 is not counted as firefox.
+function getProfilesByFamily(): Map<BrowserAlias, BrowserProfile[]> {
+  if (!cachedProfilesByFamily) {
+    const families = (Object.keys(BROWSER_ALIASES) as BrowserAlias[]).sort((a, b) => b.length - a.length);
+    const grouped = new Map<BrowserAlias, { profile: BrowserProfile; version: string }[]>();
+    for (const profile of getProfiles()) {
+      const family = families.find(
+        (name) => profile.startsWith(`${name}_`) && /^\d/.test(profile.slice(name.length + 1)),
+      );
+      if (family) {
+        const entries = grouped.get(family) ?? [];
+        entries.push({ profile, version: profile.slice(family.length + 1) });
+        grouped.set(family, entries);
+      }
+    }
+    cachedProfilesByFamily = new Map(
+      [...grouped].map(([family, entries]) => [
+        family,
+        entries.sort((a, b) => compareProfileVersions(a.version, b.version)).map((entry) => entry.profile),
+      ]),
+    );
+  }
+
+  return cachedProfilesByFamily;
+}
+
+/**
+ * Pick a random browser profile and an operating system it actually ships on.
+ *
+ * A family is chosen first, then one of its newest `latest` profiles, then one of the
+ * operating systems that family runs on, each uniformly. Picks are not weighted by
+ * real-world market share. Use the result for a whole session rather than per request:
+ * a fingerprint that changes between requests on the same cookies or IP stands out more
+ * than a fixed one.
+ *
+ * @param options - Families, how many recent versions, and operating systems to choose from
+ * @returns A `{ browser, os }` pair to spread into {@link createSession} or {@link fetch}
+ *
+ * @example
+ * ```typescript
+ * import { createSession, randomProfile } from 'wreq-js';
+ *
+ * const session = await createSession({ ...randomProfile() });
+ *
+ * // Mobile browsers only
+ * const mobile = randomProfile({ families: ['chrome', 'safari_ios'], os: ['android', 'ios'] });
+ * ```
+ */
+export function randomProfile(options: RandomProfileOptions = {}): RandomProfile {
+  const families = options.families ?? RANDOM_PROFILE_FAMILIES;
+  const latest = options.latest ?? 2;
+  const allowedOses = options.os ?? RANDOM_PROFILE_OSES;
+  const random = options.random ?? Math.random;
+
+  if (!Number.isInteger(latest) || latest < 1) {
+    throw new RequestError(`latest must be a positive integer, got ${String(latest)}`);
+  }
+
+  for (const family of families) {
+    if (!Object.hasOwn(BROWSER_ALIASES, family)) {
+      throw new RequestError(
+        `Invalid browser family: ${String(family)}. Available families: ${Object.keys(BROWSER_ALIASES).join(", ")}`,
+      );
+    }
+  }
+
+  for (const os of allowedOses) {
+    validateOperatingSystem(os);
+  }
+
+  const byFamily = getProfilesByFamily();
+  const candidates: { profiles: BrowserProfile[]; oses: EmulationOS[] }[] = [];
+  for (const family of new Set(families)) {
+    const oses = BROWSER_FAMILY_OSES[family].filter((os) => allowedOses.includes(os));
+    const profiles = byFamily.get(family)?.slice(-latest) ?? [];
+    if (oses.length > 0 && profiles.length > 0) {
+      candidates.push({ profiles, oses });
+    }
+  }
+
+  if (candidates.length === 0) {
+    throw new RequestError(`No browser family in [${families.join(", ")}] ships on any of [${allowedOses.join(", ")}]`);
+  }
+
+  const pick = <T>(items: readonly T[]): T =>
+    items[Math.min(items.length - 1, Math.floor(random() * items.length))] as T;
+  const candidate = pick(candidates);
+  return { browser: pick(candidate.profiles), os: pick(candidate.oses) };
+}
+
 /**
  * Get the headers a browser profile injects into every request, without sending one.
  *
@@ -4078,6 +4206,8 @@ export type {
   Http2PseudoHeaderId,
   Http2SettingId,
   Http2StreamDependency,
+  RandomProfile,
+  RandomProfileOptions,
   RequestDiagnostics,
   RequestEvent,
   RequestEventType,

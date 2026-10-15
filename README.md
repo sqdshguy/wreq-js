@@ -112,6 +112,17 @@ const transport = await createTransport({
 const res = await fetch('https://example.com', { transport });
 ```
 
+To vary the fingerprint, pick one per session with `randomProfile()`. It only pairs a browser with an OS it actually ships on (no Safari on Windows), and by default chooses from the two newest Chrome, Edge, Firefox, Opera and Safari profiles on Windows, macOS and Linux. Keep the pick for the whole session: a fingerprint that changes between requests on the same cookies or IP stands out more than a fixed one.
+
+```ts
+import { createSession, randomProfile } from 'wreq-js';
+
+const session = await createSession({ ...randomProfile() });
+
+// Narrow it down: newest Chrome or Safari on phones only
+const mobile = randomProfile({ families: ['chrome', 'safari_ios'], os: ['android', 'ios'], latest: 1 });
+```
+
 ## Proxies
 
 Pass a proxy per request, or set one on the session or transport so it applies to everything.
