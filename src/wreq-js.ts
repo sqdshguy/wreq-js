@@ -283,11 +283,18 @@ const websocketFinalizer =
       })
     : undefined;
 
-type NativeBodyHandle = { id: number; released: boolean };
+type NativeBodyHandle = {
+  id: number;
+  released: boolean;
+  // Set when the request's signal aborts after the response arrived; reads then reject with it.
+  abortError?: Error;
+  detachAbort?: (() => void) | undefined;
+};
 
 const bodyHandleFinalizer =
   typeof FinalizationRegistry === "function"
     ? new FinalizationRegistry<NativeBodyHandle>((handle: NativeBodyHandle) => {
+        detachBodyAbort(handle);
         if (handle.released) {
           return;
         }
@@ -703,7 +710,49 @@ function cloneNativeResponse(payload: NativeResponse): NativeResponse {
   };
 }
 
+function detachBodyAbort(handle: NativeBodyHandle): void {
+  const detach = handle.detachAbort;
+  if (detach) {
+    handle.detachAbort = undefined;
+    detach();
+  }
+}
+
+// Body streams read nothing ahead in JS, so every read goes through pull() and sees an
+// abort at once. With the default highWaterMark of 1 each layer could hand out a chunk
+// queued before the abort, and erroring the controller eagerly instead would need a
+// WeakRef to it per body, which keeps every stream alive until a full GC: +50-100 MB
+// RSS in a streaming loop.
+const BODY_STREAM_STRATEGY = { highWaterMark: 0 };
+
+// fetch() keeps listening to the signal until the body ends: an abort after the response
+// arrived errors the body and cancels it natively, as undici's abortFetch() does.
+function bindBodyAbort(handle: NativeBodyHandle, signal: AbortSignal): void {
+  if (handle.released) {
+    return;
+  }
+
+  if (signal.aborted) {
+    abortNativeBody(handle, createAbortError(signal.reason));
+    return;
+  }
+
+  const onAbort = () => abortNativeBody(handle, createAbortError(signal.reason));
+  signal.addEventListener("abort", onAbort, { once: true });
+  handle.detachAbort = () => signal.removeEventListener("abort", onAbort);
+}
+
+function abortNativeBody(handle: NativeBodyHandle, error: Error): void {
+  if (handle.released) {
+    return;
+  }
+
+  handle.abortError = error;
+  releaseNativeBody(handle);
+}
+
 function releaseNativeBody(handle: NativeBodyHandle): void {
+  detachBodyAbort(handle);
   if (handle.released) {
     return;
   }
@@ -720,6 +769,7 @@ function releaseNativeBody(handle: NativeBodyHandle): void {
 }
 
 function markNativeBodyReleased(handle: NativeBodyHandle): void {
+  detachBodyAbort(handle);
   if (handle.released) {
     return;
   }
@@ -729,27 +779,41 @@ function markNativeBodyReleased(handle: NativeBodyHandle): void {
 }
 
 function createNativeBodyStream(handle: NativeBodyHandle): ReadableStream<Uint8Array> {
-  const stream = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        const chunk = await nativeBinding.readBodyChunk(handle.id);
-
-        if (chunk === null) {
-          releaseNativeBody(handle);
-          controller.close();
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        if (handle.abortError) {
+          controller.error(handle.abortError);
           return;
         }
 
-        controller.enqueue(chunk);
-      } catch (error) {
+        try {
+          const chunk = await nativeBinding.readBodyChunk(handle.id);
+
+          // Aborted while the read was pending; the native side already ended the body.
+          if (handle.abortError) {
+            controller.error(handle.abortError);
+            return;
+          }
+
+          if (chunk === null) {
+            releaseNativeBody(handle);
+            controller.close();
+            return;
+          }
+
+          controller.enqueue(chunk);
+        } catch (error) {
+          releaseNativeBody(handle);
+          controller.error(handle.abortError ?? error);
+        }
+      },
+      cancel() {
         releaseNativeBody(handle);
-        controller.error(error);
-      }
+      },
     },
-    cancel() {
-      releaseNativeBody(handle);
-    },
-  });
+    BODY_STREAM_STRATEGY,
+  );
 
   bodyHandleFinalizer?.register(stream, handle, handle);
 
@@ -760,37 +824,40 @@ function wrapBodyStream(source: ReadableStream<Uint8Array>, onFirstUse: () => vo
   let started = false;
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      if (!started) {
-        started = true;
-        onFirstUse();
-      }
-
-      if (!reader) {
-        reader = source.getReader();
-      }
-
-      try {
-        const { done, value } = await reader.read();
-
-        if (done) {
-          controller.close();
-          return;
+  return new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        if (!started) {
+          started = true;
+          onFirstUse();
         }
 
-        controller.enqueue(value);
-      } catch (error) {
-        controller.error(error);
-      }
+        if (!reader) {
+          reader = source.getReader();
+        }
+
+        try {
+          const { done, value } = await reader.read();
+
+          if (done) {
+            controller.close();
+            return;
+          }
+
+          controller.enqueue(value);
+        } catch (error) {
+          controller.error(error);
+        }
+      },
+      cancel(reason) {
+        if (!reader) {
+          return source.cancel(reason);
+        }
+        return reader.cancel(reason);
+      },
     },
-    cancel(reason) {
-      if (!reader) {
-        return source.cancel(reason);
-      }
-      return reader.cancel(reason);
-    },
-  });
+    BODY_STREAM_STRATEGY,
+  );
 }
 
 export class Response {
@@ -851,6 +918,13 @@ export class Response {
     }
 
     this.bodyStream = undefined;
+  }
+
+  /** @internal */
+  _bindAbortSignal(signal: AbortSignal): void {
+    if (this.nativeHandle) {
+      bindBodyAbort(this.nativeHandle, signal);
+    }
   }
 
   get redirected(): boolean {
@@ -1048,9 +1122,21 @@ export class Response {
     // Fast path: if native handle is still available, read entire body in one Rust call
     if (this.nativeHandleAvailable && this.payload.bodyHandle !== null) {
       this.nativeHandleAvailable = false;
+      const handle = this.nativeHandle;
+      if (handle?.abortError) {
+        throw handle.abortError;
+      }
       try {
-        return await nativeBinding.readBodyAll(this.payload.bodyHandle);
+        const bytes = await nativeBinding.readBodyAll(this.payload.bodyHandle);
+        // An abort during the read ends it early; the bytes are incomplete.
+        if (handle?.abortError) {
+          throw handle.abortError;
+        }
+        return bytes;
       } catch (error) {
+        if (handle?.abortError) {
+          throw handle.abortError;
+        }
         // Handle already consumed or error
         if (String(error).includes("Body handle") && String(error).includes("not found")) {
           return Buffer.alloc(0);
@@ -2548,7 +2634,9 @@ async function dispatchRequest(
     abortHandler.cleanup();
   }
 
-  return new Response(payload, requestUrl);
+  const response = new Response(payload, requestUrl);
+  response._bindAbortSignal(signal);
+  return response;
 }
 
 /**

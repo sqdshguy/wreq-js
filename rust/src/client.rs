@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use wreq::cookie::Jar;
 use wreq::header::OrigHeaderMap;
@@ -301,7 +302,33 @@ struct BodyEventState {
     url: String,
 }
 
-static BODY_STREAMS: LazyLock<Cache<u64, Arc<Mutex<ResponseBodyStream>>>> = LazyLock::new(|| {
+struct StoredBody {
+    /// Taken out and dropped on cancel, which closes the connection. Dropping the map
+    /// entry is not enough: moka keeps its own reference until its housekeeping runs on
+    /// some later cache operation, and a read in progress holds another.
+    stream: Mutex<Option<ResponseBodyStream>>,
+    /// Fired by cancelBody() to wake a read that is waiting on the network.
+    cancel: CancellationToken,
+}
+
+impl StoredBody {
+    /// The next frame, or `None` once the body has ended or been cancelled; either way
+    /// the stream is dropped.
+    async fn next(&self, slot: &mut Option<ResponseBodyStream>) -> Option<wreq::Result<Bytes>> {
+        let stream = slot.as_mut()?;
+        let frame = tokio::select! {
+            biased;
+            _ = self.cancel.cancelled() => None,
+            frame = stream.next() => frame,
+        };
+        if frame.is_none() {
+            *slot = None;
+        }
+        frame
+    }
+}
+
+static BODY_STREAMS: LazyLock<Cache<u64, Arc<StoredBody>>> = LazyLock::new(|| {
     Cache::builder()
         .time_to_idle(Duration::from_secs(300))
         .build()
@@ -374,7 +401,13 @@ fn build_cert_store(mode: TrustStoreMode) -> Result<CertStore> {
 
 pub fn store_body_stream(stream: ResponseBodyStream) -> u64 {
     let handle = next_body_handle();
-    BODY_STREAMS.insert(handle, Arc::new(Mutex::new(stream)));
+    BODY_STREAMS.insert(
+        handle,
+        Arc::new(StoredBody {
+            stream: Mutex::new(Some(stream)),
+            cancel: CancellationToken::new(),
+        }),
+    );
     handle
 }
 
@@ -383,8 +416,8 @@ pub async fn read_body_chunk(handle: u64) -> Result<Option<Bytes>> {
         .get(&handle)
         .ok_or_else(|| anyhow!("Body handle {} not found", handle))?;
 
-    let mut guard = stream.lock().await;
-    let next = guard.next().await;
+    let mut guard = stream.stream.lock().await;
+    let next = stream.next(&mut guard).await;
 
     match next {
         Some(Ok(bytes)) => {
@@ -415,16 +448,23 @@ pub async fn read_body_chunk(handle: u64) -> Result<Option<Bytes>> {
 
 /// Read entire body into a single buffer. More efficient than streaming for small bodies.
 pub async fn read_body_all(handle: u64) -> Result<Bytes> {
+    // Left in the map until the body ends so cancelBody() can still reach it.
     let stream = BODY_STREAMS
-        .remove(&handle)
+        .get(&handle)
         .ok_or_else(|| anyhow!("Body handle {} not found", handle))?;
 
-    let mut guard = stream.lock().await;
+    let mut guard = stream.stream.lock().await;
     let mut chunks: Vec<Bytes> = Vec::new();
     let mut total_len = 0usize;
 
-    while let Some(result) = guard.next().await {
-        let bytes = result?;
+    while let Some(result) = stream.next(&mut guard).await {
+        let bytes = match result {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                BODY_STREAMS.remove(&handle);
+                return Err(err.into());
+            }
+        };
         total_len += bytes.len();
         if let Some(state) = BODY_EVENT_STATES.get(&handle) {
             emit_body_progress(&state, bytes.len() as u64);
@@ -432,6 +472,7 @@ pub async fn read_body_all(handle: u64) -> Result<Bytes> {
         chunks.push(bytes);
     }
 
+    BODY_STREAMS.remove(&handle);
     if let Some((_, state)) = BODY_EVENT_STATES.remove(&handle) {
         emit_body_complete(&state);
     }
@@ -453,7 +494,13 @@ pub async fn read_body_all(handle: u64) -> Result<Bytes> {
 }
 
 pub fn drop_body_stream(handle: u64) {
-    BODY_STREAMS.invalidate(&handle);
+    if let Some(body) = BODY_STREAMS.remove(&handle) {
+        body.cancel.cancel();
+        // A read holding the lock drops the stream itself once the token wakes it.
+        if let Ok(mut slot) = body.stream.try_lock() {
+            *slot = None;
+        }
+    }
     BODY_EVENT_STATES.remove(&handle);
 }
 
