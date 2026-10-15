@@ -413,6 +413,11 @@ const STREAM_CHUNK_BUDGET: usize = 256 * 1024;
 // matches the read-ahead buffer so "fits in the buffer" and "worth draining" agree.
 const ABANDON_DRAIN_LIMIT: u64 = STREAM_BUFFER_BYTES as u64;
 
+// The drain also gives up after this long, so a server or proxy that goes quiet mid-body
+// cannot hold the connection open. Chromium's HttpResponseBodyDrainer uses the same
+// 5 s (kTimeoutInSeconds) for the same job.
+const ABANDON_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
 struct BodyStreamState {
     frames: mpsc::UnboundedReceiver<wreq::Result<Bytes>>,
     /// Bytes the pump may still buffer. The pump takes permits per frame, the reader
@@ -567,15 +572,15 @@ pub fn store_body_stream(mut stream: ResponseBodyStream, content_length: Option<
     HTTP_RUNTIME.spawn(async move {
         let mut delivered: u64 = 0;
         let mut drained: u64 = 0;
-        let mut draining = false;
+        let mut drain_deadline: Option<tokio::time::Instant> = None;
 
         loop {
-            if draining {
-                // Nobody will read this body. Discard the remainder up to the cap so
-                // the connection can be reused; past it, drop the stream and let hyper
-                // close the connection.
-                match stream.next().await {
-                    Some(Ok(bytes)) => {
+            if let Some(deadline) = drain_deadline {
+                // Nobody will read this body. Discard the remainder up to the cap and the
+                // deadline so the connection can be reused; past either, drop the stream
+                // and let hyper close the connection.
+                match tokio::time::timeout_at(deadline, stream.next()).await {
+                    Ok(Some(Ok(bytes))) => {
                         drained += bytes.len() as u64;
                         if drained > ABANDON_DRAIN_LIMIT {
                             break;
@@ -590,7 +595,7 @@ pub fn store_body_stream(mut stream: ResponseBodyStream, content_length: Option<
                 // The reader side is gone (cancelled from JS, or the entry was evicted).
                 _ = pump_abandon.cancelled() => {
                     if abandoned_body_is_drainable(content_length, delivered) {
-                        draining = true;
+                        drain_deadline = Some(tokio::time::Instant::now() + ABANDON_DRAIN_TIMEOUT);
                         continue;
                     }
                     break;
@@ -613,7 +618,7 @@ pub fn store_body_stream(mut stream: ResponseBodyStream, content_length: Option<
                         // Abandoned while waiting for buffer room; this frame counts as drained.
                         if abandoned_body_is_drainable(content_length, delivered) {
                             drained += bytes.len() as u64;
-                            draining = true;
+                            drain_deadline = Some(tokio::time::Instant::now() + ABANDON_DRAIN_TIMEOUT);
                             continue;
                         }
                         break;
@@ -652,20 +657,21 @@ fn finish_body_stream_error(handle: u64, err: wreq::Error) -> anyhow::Error {
     err.into()
 }
 
-/// The next buffered frame, or `None` once the body has ended or been abandoned. A read
-/// waiting here wakes on cancelBody() at once rather than when the pump finishes draining.
-async fn next_frame(stored: &StoredBody, state: &mut BodyStreamState) -> Option<wreq::Result<Bytes>> {
-    tokio::select! {
-        biased;
-        _ = stored.abandon.cancelled() => None,
-        frame = state.frames.recv() => frame,
-    }
-}
-
 fn finish_body_stream_end(handle: u64) {
     BODY_STREAMS.invalidate(&handle);
     if let Some((_, state)) = BODY_EVENT_STATES.remove(&handle) {
         emit_body_complete(&state);
+    }
+}
+
+/// The next buffered frame, or `None` once the body has ended or been cancelled. A read
+/// that is already waiting when cancelBody() runs returns at once instead of waiting for
+/// the pump, which may still be draining the connection.
+async fn next_frame(body: &StoredBody, state: &mut BodyStreamState) -> Option<wreq::Result<Bytes>> {
+    tokio::select! {
+        biased;
+        _ = body.abandon.cancelled() => None,
+        frame = state.frames.recv() => frame,
     }
 }
 

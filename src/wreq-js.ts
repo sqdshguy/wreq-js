@@ -824,11 +824,11 @@ function detachBodyAbort(handle: NativeBodyHandle): void {
   }
 }
 
-// Body streams read nothing ahead in JS, so every read goes through pull() and sees an
-// abort at once. With the default highWaterMark of 1 each layer could hand out a chunk
-// queued before the abort, and erroring the controller eagerly instead would need a
-// WeakRef to it per body, which keeps every stream alive until a full GC: +50-100 MB
-// RSS in a streaming loop.
+// Body streams read nothing ahead in JS (the native pump already buffers up to 256 KiB),
+// so every read goes through pull() and sees an abort at once. With the default
+// highWaterMark of 1 each layer could hand out a chunk queued before the abort, and
+// erroring the controller eagerly instead would need a WeakRef to it per body, which
+// keeps every stream alive until a full GC: +50-100 MB RSS in a streaming loop.
 const BODY_STREAM_STRATEGY = { highWaterMark: 0 };
 
 // fetch() keeps listening to the signal until the body ends: an abort after the response
