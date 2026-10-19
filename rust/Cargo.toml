@@ -37,7 +37,7 @@ serde_json = "1.0.152"
 anyhow = "1.0.104"
 
 # Async runtime
-tokio = { version = "1.53.2", features = ["rt-multi-thread", "sync", "macros"] }
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "sync", "macros"] }
 tokio-util = "0.7.19"
 
 # Global state management
