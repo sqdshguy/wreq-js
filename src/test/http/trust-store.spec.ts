@@ -129,7 +129,7 @@ describe("Trust store selection", () => {
         }),
         (error: unknown) =>
           error instanceof RequestError &&
-          /`transport` cannot be combined with browser\/os\/emulation\/proxy\/insecure\/trustStore options/.test(
+          /`transport` cannot be combined with browser\/os\/emulation\/proxy\/insecure\/trustStore\/resolve options/.test(
             error.message,
           ),
       );

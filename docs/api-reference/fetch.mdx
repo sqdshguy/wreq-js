@@ -36,7 +36,7 @@ function fetch(input: string | URL | Request, init?: RequestInit): Promise<Respo
 </ParamField>
 
 <ParamField path="transport" type="Transport">
-  Reusable transport context for this request (proxy + emulation settings, with connection behavior handled by the native layer). When provided, you must not also set `browser`, `os`, `proxy`, or `insecure`.
+  Reusable transport context for this request (proxy + emulation settings, with connection behavior handled by the native layer). When provided, you must not also set `browser`, `os`, `proxy`, `insecure`, or `resolve`.
 </ParamField>
 
 <ParamField path="browser" type="BrowserProfile | BrowserAlias" default="chrome">
@@ -51,6 +51,16 @@ function fetch(input: string | URL | Request, init?: RequestInit): Promise<Respo
 
 <ParamField path="proxy" type="string">
   Proxy URL. Support depends on the native layer and proxy scheme.
+</ParamField>
+
+<ParamField path="resolve" type="Record<string, string | string[]>">
+  DNS overrides for this request only: each host maps to one address or a list of fallbacks, as
+  `ip` or `ip:port` (the port is ignored; the URL's port is used). Use it to connect to an address
+  you have already resolved and checked. Only the listed hosts are overridden: a redirect to any
+  other host is resolved through normal DNS, so when the pin is a security boundary (keeping a
+  request off private networks, say) set `redirect: 'manual'` and vet each `Location` before
+  following it. Not allowed with `transport` (set `resolve` on the transport instead) or with a
+  session from `createSession()`.
 </ParamField>
 
 <ParamField path="timeout" type="number" default="30000">

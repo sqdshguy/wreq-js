@@ -108,9 +108,12 @@ export type TrustStoreMode = "combined" | "mozilla" | "defaultPaths";
  * written as `ip` or `ip:port`. Following reqwest/wreq semantics the port is optional and ignored,
  * the request URL's port is always used.
  *
- * Useful for pinning a host to an address you have already resolved and vetted
- * (for example to enforce SSRF protection), split-horizon DNS, or testing
- * against a local server under a real hostname.
+ * Useful for pinning a host to an address you have already resolved and vetted,
+ * split-horizon DNS, or testing against a local server under a real hostname.
+ *
+ * Only the listed hosts are overridden. A redirect to any other host is resolved
+ * through normal DNS, so when the pin guards against SSRF, use `redirect: "manual"`
+ * and vet each `Location` before following it.
  *
  * @example
  * ```typescript
@@ -423,6 +426,16 @@ export interface RequestInit {
    * Ignored when `transport` is provided.
    */
   proxy?: string;
+
+  /**
+   * Override DNS resolution for this request only. See {@link ResolveMap}.
+   * Useful for pinning a host to an address you have already resolved and vetted,
+   * without creating and closing a transport for the request. Redirects to other
+   * hosts are not pinned; see {@link ResolveMap}.
+   * Not allowed with `transport` (set `resolve` on the transport instead) or with a
+   * session from `createSession()`.
+   */
+  resolve?: ResolveMap;
 
   /**
    * Request timeout in milliseconds. If the request takes longer than this value,

@@ -395,6 +395,8 @@ fn js_object_to_request_options(
         .and_then(|v: Handle<JsValue>| v.downcast::<JsNumber, _>(cx).ok())
         .map(|v| v.value(cx) as u64);
 
+    let resolve = parse_resolve_opt(cx, obj, "resolve")?;
+
     Ok(RequestOptions {
         url,
         browser,
@@ -419,6 +421,7 @@ fn js_object_to_request_options(
         read_timeout,
         compress,
         capture_diagnostics,
+        resolve,
         event_sink,
     })
 }

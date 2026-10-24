@@ -33,6 +33,7 @@ import type {
   RequestDiagnostics,
   RequestEvent,
   RequestOptions,
+  ResolveMap,
   SessionCookie,
   SessionCookieInit,
   SessionHandle,
@@ -116,6 +117,7 @@ interface NativeRequestOptions {
   headers?: HeaderTuple[];
   body?: Buffer;
   proxy?: string;
+  resolve?: ResolveMap;
   timeout?: number;
   redirect?: "follow" | "manual" | "error";
   sessionId: string;
@@ -364,6 +366,7 @@ type TransportResolution = {
   transportId?: string;
   mode?: ResolvedEmulationMode;
   proxy?: string;
+  resolve?: ResolveMap;
   insecure?: boolean;
   trustStore?: TrustStoreMode;
   captureDiagnostics?: boolean;
@@ -1516,10 +1519,11 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
       config.emulation !== undefined ||
       hasProxy ||
       config.insecure !== undefined ||
-      config.trustStore !== undefined
+      config.trustStore !== undefined ||
+      config.resolve !== undefined
     ) {
       throw new RequestError(
-        "`transport` cannot be combined with browser/os/emulation/proxy/insecure/trustStore options",
+        "`transport` cannot be combined with browser/os/emulation/proxy/insecure/trustStore/resolve options",
       );
     }
 
@@ -1534,6 +1538,10 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
   if (sessionDefaults?.transportId) {
     if (config.emulation !== undefined) {
       throw new RequestError("Session emulation cannot be changed after creation");
+    }
+
+    if (config.resolve !== undefined) {
+      throw new RequestError("`resolve` is not supported on a session; use fetch() or a transport");
     }
 
     if (config.browser !== undefined) {
@@ -1587,6 +1595,10 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
   };
   if (config.proxy !== undefined) {
     resolved.proxy = config.proxy;
+  }
+  if (config.resolve !== undefined) {
+    validateResolve(config.resolve);
+    resolved.resolve = config.resolve;
   }
   if (config.insecure !== undefined) {
     resolved.insecure = config.insecure;
@@ -2754,6 +2766,9 @@ export async function fetch(input: string | URL | Request, init?: WreqRequestIni
     }
     if (transport.proxy !== undefined) {
       requestOptions.proxy = transport.proxy;
+    }
+    if (transport.resolve !== undefined) {
+      requestOptions.resolve = transport.resolve;
     }
     if (transport.insecure !== undefined) {
       requestOptions.insecure = transport.insecure;
