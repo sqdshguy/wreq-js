@@ -42,18 +42,24 @@
       "automerge": false
     },
     {
-      "description": "Runtime Patch updates: Automerge after soak.",
-      "matchDepTypes": ["dependencies"],
+      "description": "Runtime and build-script patch updates: Automerge after soak.",
+      "matchDepTypes": ["dependencies", "build-dependencies"],
       "matchUpdateTypes": ["patch"],
       "minimumReleaseAge": "3 days",
       "automerge": true
     },
     {
-      "description": "Runtime Minor updates: Manual merge only. Changes might alter library behavior.",
-      "matchDepTypes": ["dependencies"],
+      "description": "Runtime and build-script minor updates: Automerge after a longer soak. Required CI covers all tier-1 platforms.",
+      "matchDepTypes": ["dependencies", "build-dependencies"],
       "matchUpdateTypes": ["minor"],
       "minimumReleaseAge": "7 days",
-      "automerge": false
+      "automerge": true
+    },
+    {
+      "description": "GitHub Actions digest updates (same tag, new commit): automerge.",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["digest"],
+      "automerge": true
     },
     {
       "description": "Special logic for wreq. Track pre-releases and automerge if tests pass. In Aug 2026 upstream renumbered both crates downward (wreq 6.0.0-rc.31 -> 0.16.0, wreq-util 3.0.0-rc.14 -> 0.2.0), so crates.io still reports the abandoned rc line as max_version. allowedVersions keeps us on the current 0.x line instead of being dragged back. See https://github.com/0x676e67/wreq/issues/1254",
