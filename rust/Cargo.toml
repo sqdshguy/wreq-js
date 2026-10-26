@@ -12,7 +12,7 @@ crate-type = ["cdylib"]
 # HTTP client with browser impersonation
 wreq = { version = "0.16.1", default-features = false, features = ["cookies", "gzip", "brotli", "deflate", "zstd", "charset", "system-proxy", "socks", "ws", "stream", "webpki-roots", "tokio-rt"] }
 wreq-util = { version = "0.2.0", features = ["emulation-serde", "tokio-rt", "emulation-compression"] }
-webpki-root-certs = "1.0.9"
+webpki-root-certs = "1.0.10"
 
 # WebSocket support
 futures-util = "0.3.34"
