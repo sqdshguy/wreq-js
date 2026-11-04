@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { STATUS_CODES } from "node:http";
 import { Readable } from "node:stream";
-import { ReadableStream } from "node:stream/web";
+import { ReadableStream, TextDecoderStream, type TransformStream } from "node:stream/web";
 import { BROWSER_ALIASES } from "./generated-types.js";
 import { nativeRequire as require } from "./native-require.js";
 import type {
@@ -484,6 +484,14 @@ function coerceHeaderValue(value: unknown): string {
   return String(value);
 }
 
+// Iterator types follow the consumer's global Headers so wreq's Headers stays assignable to
+// it: newer @types/node (undici-types 8.x) declares ES2025 iterator helpers (map, filter,
+// take, ...) on these iterators, older ones a plain iterator. The generators below inherit
+// those helpers from Iterator.prototype at runtime wherever the engine has them (Node 22+).
+type HeadersEntriesIterator = ReturnType<globalThis.Headers["entries"]>;
+type HeadersKeysIterator = ReturnType<globalThis.Headers["keys"]>;
+type HeadersValuesIterator = ReturnType<globalThis.Headers["values"]>;
+
 export class Headers implements Iterable<[string, string]> {
   private readonly store = new Map<string, HeaderStoreEntry>();
 
@@ -589,20 +597,26 @@ export class Headers implements Iterable<[string, string]> {
     this.store.delete(normalized.key);
   }
 
-  entries(): IterableIterator<[string, string]> {
+  entries(): HeadersEntriesIterator {
     return this[Symbol.iterator]();
   }
 
-  *keys(): IterableIterator<string> {
-    for (const [name] of this) {
-      yield name;
-    }
+  keys(): HeadersKeysIterator {
+    const generator = function* (headers: Headers) {
+      for (const [name] of headers) {
+        yield name;
+      }
+    };
+    return generator(this) as unknown as HeadersKeysIterator;
   }
 
-  *values(): IterableIterator<string> {
-    for (const [, value] of this) {
-      yield value;
-    }
+  values(): HeadersValuesIterator {
+    const generator = function* (headers: Headers) {
+      for (const [, value] of headers) {
+        yield value;
+      }
+    };
+    return generator(this) as unknown as HeadersValuesIterator;
   }
 
   forEach(callback: (value: string, name: string, parent: Headers) => void, thisArg?: unknown): void {
@@ -611,7 +625,7 @@ export class Headers implements Iterable<[string, string]> {
     }
   }
 
-  [Symbol.iterator](): IterableIterator<[string, string]> {
+  [Symbol.iterator](): HeadersEntriesIterator {
     const generator = function* (store: Map<string, HeaderStoreEntry>) {
       for (const entry of store.values()) {
         if (entry.name.toLowerCase() === "set-cookie") {
@@ -624,7 +638,7 @@ export class Headers implements Iterable<[string, string]> {
       }
     };
 
-    return generator(this.store);
+    return generator(this.store) as unknown as HeadersEntriesIterator;
   }
 
   toObject(): Record<string, string> {
@@ -1076,7 +1090,29 @@ export class Response {
   async blob(): Promise<Blob> {
     const bytes = await this.consumeBody();
     const contentType = this.headers.get("content-type") ?? "";
-    return new Blob([bytes], contentType ? { type: contentType } : undefined);
+    // Blob copies its parts; the cast only drops the SharedArrayBuffer variant that a
+    // native-backed Buffer never carries.
+    return new Blob([bytes as Uint8Array<ArrayBuffer>], contentType ? { type: contentType } : undefined);
+  }
+
+  // Fetch Standard Body.textStream(): the body piped through a UTF-8 TextDecoderStream.
+  textStream(): ReadableStream<string> {
+    this.assertBodyAvailable();
+
+    const stream = this.body;
+
+    if (stream === null) {
+      return new ReadableStream<string>({
+        start(controller) {
+          controller.close();
+        },
+      });
+    }
+
+    this.bodyUsed = true;
+    // TextDecoderStream accepts any BufferSource, a superset of the Uint8Array chunks
+    // the body yields; TS treats the stream generics as invariant, hence the narrowing.
+    return stream.pipeThrough(new TextDecoderStream() as TransformStream<Uint8Array, string>);
   }
 
   async formData(): Promise<FormData> {
@@ -3760,7 +3796,7 @@ export class WebSocket {
       return arrayBuffer;
     }
     if (this._binaryType === "blob") {
-      return new Blob([data]);
+      return new Blob([data as Uint8Array<ArrayBuffer>]);
     }
     return data;
   }
