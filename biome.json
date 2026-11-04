@@ -31,5 +31,10 @@
     "actions": {
       "source": { "preset": "none" }
     }
+  },
+  "yaml": {
+    "formatter": {
+      "enabled": false
+    }
   }
 }

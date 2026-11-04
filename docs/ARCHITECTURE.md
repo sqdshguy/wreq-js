@@ -1,4 +1,5 @@
 ---
+
 title: Architecture Overview
 description: Internal architecture notes covering JS, Neon, and Rust request flow.
 noindex: true
