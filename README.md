@@ -14,11 +14,11 @@ If your code works in the browser but gets a 403 from Node, the usual reason is 
 It stops at the transport layer. It does not run JavaScript, solve CAPTCHAs or handle behavioural analysis, so Turnstile, Akamai sensor data and Kasada need something like Playwright instead. If a target serves an interstitial that requires script execution, no TLS-level client gets past it, this one included.
 
 ```ts
-import { fetch } from 'wreq-js';
+import { fetch } from "wreq-js";
 
-const res = await fetch('https://example.com/api', {
-  browser: 'chrome_149',
-  os: 'windows',
+const res = await fetch("https://example.com/api", {
+  browser: "chrome_149",
+  os: "windows",
 });
 
 console.log(await res.json());
@@ -51,15 +51,15 @@ Node.js 20 or newer.
 
 Measured 2026-08-06 on an M-series Mac. "H2 correct" means the Akamai HTTP/2 fingerprint is byte identical to what real Chrome sends. Throughput is 300 sequential requests against a local server, so it reflects the JavaScript to native boundary rather than the network. Reproduce with `npm run bench`.
 
-| Library | Engine | Newest Chrome | H2 correct | req/s | Cold start |
-|---|---|---|---|---|---|
-| **wreq-js** | Rust `wreq` + BoringSSL, in-process | **149** | **Yes** | **12842** | **7 ms** |
-| [node-wreq](https://github.com/StopMakingThatBigFace/node-wreq) | Same Rust core | 149 | Yes | 6500 | 10 ms |
-| [impers](https://github.com/lexiforest/impers) | curl-impersonate, in-process | 146 | Yes | 8439 | 16 ms |
-| [impit](https://github.com/apify/impit) | Rust `reqwest` + patched `rustls` | 124 | **No** ([#385](https://github.com/apify/impit/issues/385)) | 6710 | 37 ms |
-| [node-tls-client](https://github.com/Sahil1337/node-tls-client) | Go shared library over FFI | 131 | Yes | not tested | downloads its native library at runtime |
-| [CycleTLS](https://github.com/Danny-Dasilva/CycleTLS) | Go subprocess with IPC | not tested | not tested | not tested | per-request IPC overhead |
-| [got-scraping](https://github.com/apify/got-scraping) | Pure JS, headers only | n/a | no TLS control | n/a | end of life |
+| Library                                                         | Engine                              | Newest Chrome | H2 correct                                                 | req/s      | Cold start                              |
+| --------------------------------------------------------------- | ----------------------------------- | ------------- | ---------------------------------------------------------- | ---------- | --------------------------------------- |
+| **wreq-js**                                                     | Rust `wreq` + BoringSSL, in-process | **149**       | **Yes**                                                    | **12842**  | **7 ms**                                |
+| [node-wreq](https://github.com/StopMakingThatBigFace/node-wreq) | Same Rust core                      | 149           | Yes                                                        | 6500       | 10 ms                                   |
+| [impers](https://github.com/lexiforest/impers)                  | curl-impersonate, in-process        | 146           | Yes                                                        | 8439       | 16 ms                                   |
+| [impit](https://github.com/apify/impit)                         | Rust `reqwest` + patched `rustls`   | 124           | **No** ([#385](https://github.com/apify/impit/issues/385)) | 6710       | 37 ms                                   |
+| [node-tls-client](https://github.com/Sahil1337/node-tls-client) | Go shared library over FFI          | 131           | Yes                                                        | not tested | downloads its native library at runtime |
+| [CycleTLS](https://github.com/Danny-Dasilva/CycleTLS)           | Go subprocess with IPC              | not tested    | not tested                                                 | not tested | per-request IPC overhead                |
+| [got-scraping](https://github.com/apify/got-scraping)           | Pure JS, headers only               | n/a           | no TLS control                                             | n/a        | end of life                             |
 
 impit's HTTP/2 SETTINGS are its underlying Rust HTTP library's defaults rather than Chrome's, so it omits `HEADER_TABLE_SIZE` and sends a `MAX_FRAME_SIZE` that Chrome never sends. Anything hashing that frame sees a client claiming to be Chrome while speaking HTTP/2 like a Rust program.
 
@@ -70,17 +70,17 @@ If you are migrating off `got-scraping`, note that it only ever rewrote headers.
 A session keeps the connection pool and the TLS session cache alive across requests. Standalone `fetch()` opens a new connection every call, so you pay a full TLS handshake each time: roughly 53 ms against a typical host versus 15 ms on a session. Cookies persist too. Use a session for anything past a single request.
 
 ```ts
-import { createSession } from 'wreq-js';
+import { createSession } from "wreq-js";
 
-const session = await createSession({ browser: 'chrome_149', os: 'windows' });
+const session = await createSession({ browser: "chrome_149", os: "windows" });
 
 try {
-  await session.fetch('https://example.com/login', {
-    method: 'POST',
-    body: new URLSearchParams({ user: 'name', pass: 'secret' }),
+  await session.fetch("https://example.com/login", {
+    method: "POST",
+    body: new URLSearchParams({ user: "name", pass: "secret" }),
   });
 
-  const profile = await session.fetch('https://example.com/profile');
+  const profile = await session.fetch("https://example.com/profile");
   console.log(await profile.json());
 } finally {
   await session.close();
@@ -90,37 +90,40 @@ try {
 `withSession` does the cleanup for you:
 
 ```ts
-import { withSession } from 'wreq-js';
+import { withSession } from "wreq-js";
 
-const data = await withSession(async (session) => {
-  const res = await session.fetch('https://example.com/api');
-  return res.json();
-}, { browser: 'chrome_149' });
+const data = await withSession(
+  async (session) => {
+    const res = await session.fetch("https://example.com/api");
+    return res.json();
+  },
+  { browser: "chrome_149" },
+);
 ```
 
 If you want pooled connections without a shared cookie jar, use a transport instead:
 
 ```ts
-import { createTransport, fetch } from 'wreq-js';
+import { createTransport, fetch } from "wreq-js";
 
 const transport = await createTransport({
-  browser: 'chrome_149',
-  proxy: 'http://user:pass@proxy.example.com:8080',
+  browser: "chrome_149",
+  proxy: "http://user:pass@proxy.example.com:8080",
   poolMaxIdlePerHost: 8,
 });
 
-const res = await fetch('https://example.com', { transport });
+const res = await fetch("https://example.com", { transport });
 ```
 
 To vary the fingerprint, pick one per session with `randomProfile()`. It only pairs a browser with an OS it actually ships on (no Safari on Windows), and by default chooses from the two newest Chrome, Edge, Firefox, Opera and Safari profiles on Windows, macOS and Linux. Keep the pick for the whole session: a fingerprint that changes between requests on the same cookies or IP stands out more than a fixed one.
 
 ```ts
-import { createSession, randomProfile } from 'wreq-js';
+import { createSession, randomProfile } from "wreq-js";
 
 const session = await createSession({ ...randomProfile() });
 
 // Narrow it down: newest Chrome or Safari on phones only
-const mobile = randomProfile({ families: ['chrome', 'safari_ios'], os: ['android', 'ios'], latest: 1 });
+const mobile = randomProfile({ families: ["chrome", "safari_ios"], os: ["android", "ios"], latest: 1 });
 ```
 
 ## Proxies
@@ -128,9 +131,9 @@ const mobile = randomProfile({ families: ['chrome', 'safari_ios'], os: ['android
 Pass a proxy per request, or set one on the session or transport so it applies to everything.
 
 ```ts
-const res = await fetch('https://example.com', {
-  browser: 'chrome_149',
-  proxy: 'http://user:pass@proxy.example.com:8080',
+const res = await fetch("https://example.com", {
+  browser: "chrome_149",
+  proxy: "http://user:pass@proxy.example.com:8080",
 });
 ```
 
@@ -141,7 +144,7 @@ const res = await fetch('https://example.com', {
 Response bodies stream, so you can process large downloads without buffering them.
 
 ```ts
-const res = await fetch('https://example.com/large.json', { browser: 'chrome_149' });
+const res = await fetch("https://example.com/large.json", { browser: "chrome_149" });
 
 for await (const chunk of res.body) {
   process.stdout.write(`got ${chunk.length} bytes\n`);
@@ -155,25 +158,25 @@ Set `compress: false` if you want the raw compressed bytes and the `Content-Enco
 One await gets you a connected socket:
 
 ```ts
-import { websocket } from 'wreq-js';
+import { websocket } from "wreq-js";
 
-const ws = await websocket('wss://example.com/ws', {
-  browser: 'chrome_149',
-  headers: { Authorization: 'Bearer token' },
+const ws = await websocket("wss://example.com/ws", {
+  browser: "chrome_149",
+  headers: { Authorization: "Bearer token" },
 });
 
 ws.onmessage = (event) => console.log(event.data);
-ws.send('hello');
-ws.close(1000, 'done');
+ws.send("hello");
+ws.close(1000, "done");
 ```
 
 Or use the constructor if you want browser-like `CONNECTING` behaviour:
 
 ```ts
-import { WebSocket } from 'wreq-js';
+import { WebSocket } from "wreq-js";
 
-const ws = new WebSocket('wss://example.com/ws', { browser: 'chrome_149' });
-ws.onopen = () => ws.send('connected');
+const ws = new WebSocket("wss://example.com/ws", { browser: "chrome_149" });
+ws.onopen = () => ws.send("connected");
 ```
 
 `session.websocket(...)` reuses the cookies and transport settings from the session's HTTP calls, which is what you usually want after logging in.
@@ -183,13 +186,13 @@ ws.onopen = () => ws.send('connected');
 When a preset gets you close but a specific target is still picky, layer overrides on top of it. Anything you do not specify keeps the profile's value.
 
 ```ts
-const res = await fetch('https://example.com', {
-  browser: 'chrome_149',
+const res = await fetch("https://example.com", {
+  browser: "chrome_149",
   emulation: {
     http2Options: {
       headerTableSize: 65536,
       initialWindowSize: 6291456,
-      headersPseudoOrder: ['Method', 'Authority', 'Scheme', 'Path'],
+      headersPseudoOrder: ["Method", "Authority", "Scheme", "Path"],
     },
   },
 });
@@ -198,10 +201,10 @@ const res = await fetch('https://example.com', {
 Header order and casing are preserved when you pass tuples, which matters for HTTP/1 against WAFs that check it:
 
 ```ts
-await fetch('https://example.com', {
+await fetch("https://example.com", {
   headers: [
-    ['Accept', 'text/html'],
-    ['X-Request-Id', 'abc'],
+    ["Accept", "text/html"],
+    ["X-Request-Id", "abc"],
   ],
 });
 ```
@@ -214,7 +217,7 @@ The full surface, including cipher lists, curves, ALPN, ALPS, GREASE and certifi
 **How do I see what fingerprint I am actually sending?**
 
 ```ts
-const r = await fetch('https://tls.peet.ws/api/all', { browser: 'chrome_149' });
+const r = await fetch("https://tls.peet.ws/api/all", { browser: "chrome_149" });
 const d = await r.json();
 
 console.log(d.tls.ja4, d.http2.akamai_fingerprint);

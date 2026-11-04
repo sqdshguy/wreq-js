@@ -4,11 +4,11 @@
 
 wreq-js ships with built-in browser profiles that replicate the TLS, HTTP/2, and header fingerprints of real browsers. The custom emulation API lets you go beyond those presets in three ways:
 
-| Mode | When it activates | What happens |
-|---|---|---|
-| **Preset only** | `browser` and/or `os` is set, no `emulation` | The built-in profile for that browser+OS pair is used as-is. |
-| **Preset + overlay** | `browser` and/or `os` is set **and** `emulation` is provided | The built-in profile is resolved first, then every field in `emulation` is layered on top. Headers are merged (matching names replaced, new names appended). TLS/HTTP options are fully replaced at the sub-object level. |
-| **Standalone custom** | Neither `browser` nor `os` is set, only `emulation` | No preset is loaded. You supply the entire fingerprint yourself. At least one of `tlsOptions`, `http1Options`, `http2Options`, `headers`, or `origHeaders` must be present. |
+| Mode                  | When it activates                                            | What happens                                                                                                                                                                                                              |
+| --------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Preset only**       | `browser` and/or `os` is set, no `emulation`                 | The built-in profile for that browser+OS pair is used as-is.                                                                                                                                                              |
+| **Preset + overlay**  | `browser` and/or `os` is set **and** `emulation` is provided | The built-in profile is resolved first, then every field in `emulation` is layered on top. Headers are merged (matching names replaced, new names appended). TLS/HTTP options are fully replaced at the sub-object level. |
+| **Standalone custom** | Neither `browser` nor `os` is set, only `emulation`          | No preset is loaded. You supply the entire fingerprint yourself. At least one of `tlsOptions`, `http1Options`, `http2Options`, `headers`, or `origHeaders` must be present.                                               |
 
 The `emulation` option is accepted by `fetch()`, `createSession()`, `createTransport()`, and `websocket()`.
 
@@ -40,7 +40,7 @@ const response = await fetch("https://example.com", {
   os: "macos",
   emulation: {
     tlsOptions: {
-      permuteExtensions: false,  // disable random extension shuffling
+      permuteExtensions: false, // disable random extension shuffling
     },
     headers: {
       "X-Custom": "overlay-value",
@@ -93,7 +93,7 @@ const response = await fetch("https://example.com", {
     },
     headers: {
       "User-Agent": "MyCustomAgent/1.0",
-      "Accept": "text/html",
+      Accept: "text/html",
     },
     origHeaders: ["User-Agent", "Accept"],
   },
@@ -130,13 +130,13 @@ const transport = createTransport({
 
 Top-level emulation configuration passed via the `emulation` field.
 
-| Field | Type | Description |
-|---|---|---|
-| `tlsOptions` | `CustomTlsOptions` | TLS fingerprint configuration. |
-| `http1Options` | `CustomHttp1Options` | HTTP/1.1 client tuning. |
-| `http2Options` | `CustomHttp2Options` | HTTP/2 framing, settings, and priority configuration. |
-| `headers` | `HeadersInit` | Default headers for this emulation. In preset+overlay mode, matching header names in the preset are replaced; new names are appended. In standalone mode, these are the only default headers. |
-| `origHeaders` | `string[]` | Controls the wire-order and original casing of header names. Each entry is a header name with the exact casing you want on the wire. Entries are deduplicated case-insensitively; duplicates are rejected. |
+| Field          | Type                 | Description                                                                                                                                                                                                |
+| -------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tlsOptions`   | `CustomTlsOptions`   | TLS fingerprint configuration.                                                                                                                                                                             |
+| `http1Options` | `CustomHttp1Options` | HTTP/1.1 client tuning.                                                                                                                                                                                    |
+| `http2Options` | `CustomHttp2Options` | HTTP/2 framing, settings, and priority configuration.                                                                                                                                                      |
+| `headers`      | `HeadersInit`        | Default headers for this emulation. In preset+overlay mode, matching header names in the preset are replaced; new names are appended. In standalone mode, these are the only default headers.              |
+| `origHeaders`  | `string[]`           | Controls the wire-order and original casing of header names. Each entry is a header name with the exact casing you want on the wire. Entries are deduplicated case-insensitively; duplicates are rejected. |
 
 ---
 
@@ -144,33 +144,33 @@ Top-level emulation configuration passed via the `emulation` field.
 
 All 26 fields that control the TLS ClientHello fingerprint.
 
-| Field | Type | Description |
-|---|---|---|
-| `alpnProtocols` | `AlpnProtocol[]` | ALPN protocol list advertised in the ClientHello. Values: `"HTTP1"`, `"HTTP2"`, `"HTTP3"`. |
-| `alpsProtocols` | `AlpsProtocol[]` | ALPS (Application-Layer Protocol Settings) protocol list. Values: `"HTTP1"`, `"HTTP2"`, `"HTTP3"`. |
-| `alpsUseNewCodepoint` | `boolean` | Use the new ALPS codepoint (required for modern Chrome profiles). |
-| `sessionTicket` | `boolean` | Enable TLS session ticket support. |
-| `minTlsVersion` | `TlsVersion` | Minimum TLS version. Accepts `"1.0"`, `"1.1"`, `"1.2"`, `"1.3"` (and prefixed forms like `"TLS1.2"`). |
-| `maxTlsVersion` | `TlsVersion` | Maximum TLS version. Same format as `minTlsVersion`. |
-| `preSharedKey` | `boolean` | Enable TLS pre-shared key extension. |
-| `enableEchGrease` | `boolean` | Enable ECH (Encrypted Client Hello) GREASE. |
-| `permuteExtensions` | `boolean` | Randomly shuffle TLS extensions on each connection. This is what Chrome does natively, causing JA3 to vary per request while JA4 remains stable (JA4 sorts extensions before hashing). |
-| `greaseEnabled` | `boolean` | Enable GREASE values in the ClientHello (cipher suites, extensions, etc.). |
-| `enableOcspStapling` | `boolean` | Advertise OCSP stapling support. |
-| `enableSignedCertTimestamps` | `boolean` | Advertise SCT (Signed Certificate Timestamps) support. |
-| `recordSizeLimit` | `number` | TLS record size limit extension value. Integer in range 0--65535. |
-| `pskSkipSessionTicket` | `boolean` | Skip session ticket when using PSK. |
-| `pskDheKe` | `boolean` | Enable PSK with (EC)DHE key exchange mode. |
-| `renegotiation` | `boolean` | Enable TLS renegotiation support. |
-| `delegatedCredentials` | `string` | Delegated credentials signature algorithms string (e.g., `"ecdsa_secp256r1_sha256,ecdsa_secp384r1_sha384,ecdsa_secp521r1_sha512,ecdsa_sha1"`). Used by Firefox. |
-| `curvesList` | `string` | Colon-separated list of supported elliptic curves / named groups (e.g., `"X25519MLKEM768:X25519:P-256:P-384"`). The name `X25519MLKEM768` maps to wire ID 4588. |
-| `cipherList` | `string` | OpenSSL-style cipher suite string (e.g., `"TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256"`). |
-| `sigalgsList` | `string` | Colon-separated list of signature algorithms (e.g., `"ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256"`). |
-| `certificateCompressionAlgorithms` | `Array<"zlib" \| "brotli" \| "zstd">` | Certificate compression algorithms to advertise. Duplicates are rejected. |
-| `extensionPermutation` | `number[]` | Fixed ordering of TLS extension type IDs. Each entry is an extension type ID (0--65535). Unlike `permuteExtensions` (random), this sets a deterministic order. Duplicates are rejected. |
-| `aesHwOverride` | `boolean` | Override AES hardware acceleration detection. When `false`, the cipher list is reordered as if AES-NI is unavailable (ChaCha20 preferred). |
-| `preserveTls13CipherList` | `boolean` | When `true`, the TLS 1.3 cipher order from `cipherList` is preserved exactly as specified rather than being reordered by the library. |
-| `randomAesHwOverride` | `boolean` | Randomly decide whether to emulate AES hardware support on each connection. |
+| Field                              | Type                                  | Description                                                                                                                                                                             |
+| ---------------------------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `alpnProtocols`                    | `AlpnProtocol[]`                      | ALPN protocol list advertised in the ClientHello. Values: `"HTTP1"`, `"HTTP2"`, `"HTTP3"`.                                                                                              |
+| `alpsProtocols`                    | `AlpsProtocol[]`                      | ALPS (Application-Layer Protocol Settings) protocol list. Values: `"HTTP1"`, `"HTTP2"`, `"HTTP3"`.                                                                                      |
+| `alpsUseNewCodepoint`              | `boolean`                             | Use the new ALPS codepoint (required for modern Chrome profiles).                                                                                                                       |
+| `sessionTicket`                    | `boolean`                             | Enable TLS session ticket support.                                                                                                                                                      |
+| `minTlsVersion`                    | `TlsVersion`                          | Minimum TLS version. Accepts `"1.0"`, `"1.1"`, `"1.2"`, `"1.3"` (and prefixed forms like `"TLS1.2"`).                                                                                   |
+| `maxTlsVersion`                    | `TlsVersion`                          | Maximum TLS version. Same format as `minTlsVersion`.                                                                                                                                    |
+| `preSharedKey`                     | `boolean`                             | Enable TLS pre-shared key extension.                                                                                                                                                    |
+| `enableEchGrease`                  | `boolean`                             | Enable ECH (Encrypted Client Hello) GREASE.                                                                                                                                             |
+| `permuteExtensions`                | `boolean`                             | Randomly shuffle TLS extensions on each connection. This is what Chrome does natively, causing JA3 to vary per request while JA4 remains stable (JA4 sorts extensions before hashing).  |
+| `greaseEnabled`                    | `boolean`                             | Enable GREASE values in the ClientHello (cipher suites, extensions, etc.).                                                                                                              |
+| `enableOcspStapling`               | `boolean`                             | Advertise OCSP stapling support.                                                                                                                                                        |
+| `enableSignedCertTimestamps`       | `boolean`                             | Advertise SCT (Signed Certificate Timestamps) support.                                                                                                                                  |
+| `recordSizeLimit`                  | `number`                              | TLS record size limit extension value. Integer in range 0--65535.                                                                                                                       |
+| `pskSkipSessionTicket`             | `boolean`                             | Skip session ticket when using PSK.                                                                                                                                                     |
+| `pskDheKe`                         | `boolean`                             | Enable PSK with (EC)DHE key exchange mode.                                                                                                                                              |
+| `renegotiation`                    | `boolean`                             | Enable TLS renegotiation support.                                                                                                                                                       |
+| `delegatedCredentials`             | `string`                              | Delegated credentials signature algorithms string (e.g., `"ecdsa_secp256r1_sha256,ecdsa_secp384r1_sha384,ecdsa_secp521r1_sha512,ecdsa_sha1"`). Used by Firefox.                         |
+| `curvesList`                       | `string`                              | Colon-separated list of supported elliptic curves / named groups (e.g., `"X25519MLKEM768:X25519:P-256:P-384"`). The name `X25519MLKEM768` maps to wire ID 4588.                         |
+| `cipherList`                       | `string`                              | OpenSSL-style cipher suite string (e.g., `"TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256"`).                                                               |
+| `sigalgsList`                      | `string`                              | Colon-separated list of signature algorithms (e.g., `"ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256"`).                                                                   |
+| `certificateCompressionAlgorithms` | `Array<"zlib" \| "brotli" \| "zstd">` | Certificate compression algorithms to advertise. Duplicates are rejected.                                                                                                               |
+| `extensionPermutation`             | `number[]`                            | Fixed ordering of TLS extension type IDs. Each entry is an extension type ID (0--65535). Unlike `permuteExtensions` (random), this sets a deterministic order. Duplicates are rejected. |
+| `aesHwOverride`                    | `boolean`                             | Override AES hardware acceleration detection. When `false`, the cipher list is reordered as if AES-NI is unavailable (ChaCha20 preferred).                                              |
+| `preserveTls13CipherList`          | `boolean`                             | When `true`, the TLS 1.3 cipher order from `cipherList` is preserved exactly as specified rather than being reordered by the library.                                                   |
+| `randomAesHwOverride`              | `boolean`                             | Randomly decide whether to emulate AES hardware support on each connection.                                                                                                             |
 
 ---
 
@@ -178,16 +178,16 @@ All 26 fields that control the TLS ClientHello fingerprint.
 
 All 8 fields for HTTP/1.1 client configuration.
 
-| Field | Type | Description |
-|---|---|---|
-| `http09Responses` | `boolean` | Accept HTTP/0.9 responses. |
-| `writev` | `boolean` | Use vectored writes for HTTP/1.1 requests. |
-| `maxHeaders` | `number` | Maximum number of headers to accept in a response. Non-negative integer. |
-| `readBufExactSize` | `number` | Exact read buffer size. Non-negative integer. **Cannot be set together with `maxBufSize`.** |
-| `maxBufSize` | `number` | Maximum read buffer size. Must be at least 8192. **Cannot be set together with `readBufExactSize`.** |
-| `ignoreInvalidHeadersInResponses` | `boolean` | Silently ignore invalid headers in responses instead of erroring. |
-| `allowSpacesAfterHeaderNameInResponses` | `boolean` | Allow spaces after the header name (before the colon) in responses. |
-| `allowObsoleteMultilineHeadersInResponses` | `boolean` | Allow obsolete multi-line (folded) headers in responses. |
+| Field                                      | Type      | Description                                                                                          |
+| ------------------------------------------ | --------- | ---------------------------------------------------------------------------------------------------- |
+| `http09Responses`                          | `boolean` | Accept HTTP/0.9 responses.                                                                           |
+| `writev`                                   | `boolean` | Use vectored writes for HTTP/1.1 requests.                                                           |
+| `maxHeaders`                               | `number`  | Maximum number of headers to accept in a response. Non-negative integer.                             |
+| `readBufExactSize`                         | `number`  | Exact read buffer size. Non-negative integer. **Cannot be set together with `maxBufSize`.**          |
+| `maxBufSize`                               | `number`  | Maximum read buffer size. Must be at least 8192. **Cannot be set together with `readBufExactSize`.** |
+| `ignoreInvalidHeadersInResponses`          | `boolean` | Silently ignore invalid headers in responses instead of erroring.                                    |
+| `allowSpacesAfterHeaderNameInResponses`    | `boolean` | Allow spaces after the header name (before the colon) in responses.                                  |
+| `allowObsoleteMultilineHeadersInResponses` | `boolean` | Allow obsolete multi-line (folded) headers in responses.                                             |
 
 ---
 
@@ -195,30 +195,30 @@ All 8 fields for HTTP/1.1 client configuration.
 
 All 23 fields for HTTP/2 framing and settings configuration.
 
-| Field | Type | Description |
-|---|---|---|
-| `adaptiveWindow` | `boolean` | Enable adaptive flow control window sizing. |
-| `initialStreamId` | `number` | First stream ID to use (e.g., `1` or `3`). |
-| `initialConnectionWindowSize` | `number` | Initial connection-level flow control window size. See the [WINDOW_UPDATE mapping](#how-initialconnectionwindowsize-maps-to-window_update) section for details on how this translates to the wire. |
-| `initialWindowSize` | `number` | Initial stream-level flow control window size. Sent in the SETTINGS frame as `SETTINGS_INITIAL_WINDOW_SIZE`. |
-| `initialMaxSendStreams` | `number` | Maximum number of concurrent streams the client will initiate. |
-| `maxFrameSize` | `number` | Maximum HTTP/2 frame size. Sent in the SETTINGS frame as `SETTINGS_MAX_FRAME_SIZE`. |
-| `keepAliveInterval` | `number` | Interval between HTTP/2 PING frames in milliseconds. |
-| `keepAliveTimeout` | `number` | Timeout for HTTP/2 PING acknowledgements in milliseconds. |
-| `keepAliveWhileIdle` | `boolean` | Send keep-alive PINGs even when no streams are active. |
-| `maxConcurrentResetStreams` | `number` | Maximum number of locally reset streams tracked at once. |
-| `maxSendBufferSize` | `number` | Maximum size of the send buffer per stream. |
-| `maxConcurrentStreams` | `number` | `SETTINGS_MAX_CONCURRENT_STREAMS` value to send. |
-| `maxHeaderListSize` | `number` | `SETTINGS_MAX_HEADER_LIST_SIZE` value to send. |
-| `maxPendingAcceptResetStreams` | `number` | Maximum number of pending accept-reset streams. |
-| `enablePush` | `boolean` | `SETTINGS_ENABLE_PUSH` value (usually `false` for clients). |
-| `headerTableSize` | `number` | `SETTINGS_HEADER_TABLE_SIZE` value for HPACK. |
-| `enableConnectProtocol` | `boolean` | `SETTINGS_ENABLE_CONNECT_PROTOCOL` (RFC 8441). |
-| `noRfc7540Priorities` | `boolean` | Disable RFC 7540 stream priorities. Chrome sets this to `true` since it uses RFC 9218 extensible priorities. |
-| `settingsOrder` | `Http2SettingId[]` | Explicit ordering of settings in the SETTINGS frame. Each entry appears at most once. See [Http2SettingId](#http2settingid). |
-| `headersPseudoOrder` | `Http2PseudoHeaderId[]` | Ordering of HTTP/2 pseudo-headers (`:method`, `:scheme`, etc.) in HEADERS frames. See [Http2PseudoHeaderId](#http2pseudoheaderid). |
-| `headersStreamDependency` | `Http2StreamDependency` | Stream dependency for HEADERS frames (RFC 7540 priority). |
-| `priorities` | `Http2Priority[]` | Explicit PRIORITY frames to send after connection setup. Each `streamId` must be unique and greater than 0. |
+| Field                          | Type                    | Description                                                                                                                                                                                        |
+| ------------------------------ | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `adaptiveWindow`               | `boolean`               | Enable adaptive flow control window sizing.                                                                                                                                                        |
+| `initialStreamId`              | `number`                | First stream ID to use (e.g., `1` or `3`).                                                                                                                                                         |
+| `initialConnectionWindowSize`  | `number`                | Initial connection-level flow control window size. See the [WINDOW_UPDATE mapping](#how-initialconnectionwindowsize-maps-to-window_update) section for details on how this translates to the wire. |
+| `initialWindowSize`            | `number`                | Initial stream-level flow control window size. Sent in the SETTINGS frame as `SETTINGS_INITIAL_WINDOW_SIZE`.                                                                                       |
+| `initialMaxSendStreams`        | `number`                | Maximum number of concurrent streams the client will initiate.                                                                                                                                     |
+| `maxFrameSize`                 | `number`                | Maximum HTTP/2 frame size. Sent in the SETTINGS frame as `SETTINGS_MAX_FRAME_SIZE`.                                                                                                                |
+| `keepAliveInterval`            | `number`                | Interval between HTTP/2 PING frames in milliseconds.                                                                                                                                               |
+| `keepAliveTimeout`             | `number`                | Timeout for HTTP/2 PING acknowledgements in milliseconds.                                                                                                                                          |
+| `keepAliveWhileIdle`           | `boolean`               | Send keep-alive PINGs even when no streams are active.                                                                                                                                             |
+| `maxConcurrentResetStreams`    | `number`                | Maximum number of locally reset streams tracked at once.                                                                                                                                           |
+| `maxSendBufferSize`            | `number`                | Maximum size of the send buffer per stream.                                                                                                                                                        |
+| `maxConcurrentStreams`         | `number`                | `SETTINGS_MAX_CONCURRENT_STREAMS` value to send.                                                                                                                                                   |
+| `maxHeaderListSize`            | `number`                | `SETTINGS_MAX_HEADER_LIST_SIZE` value to send.                                                                                                                                                     |
+| `maxPendingAcceptResetStreams` | `number`                | Maximum number of pending accept-reset streams.                                                                                                                                                    |
+| `enablePush`                   | `boolean`               | `SETTINGS_ENABLE_PUSH` value (usually `false` for clients).                                                                                                                                        |
+| `headerTableSize`              | `number`                | `SETTINGS_HEADER_TABLE_SIZE` value for HPACK.                                                                                                                                                      |
+| `enableConnectProtocol`        | `boolean`               | `SETTINGS_ENABLE_CONNECT_PROTOCOL` (RFC 8441).                                                                                                                                                     |
+| `noRfc7540Priorities`          | `boolean`               | Disable RFC 7540 stream priorities. Chrome sets this to `true` since it uses RFC 9218 extensible priorities.                                                                                       |
+| `settingsOrder`                | `Http2SettingId[]`      | Explicit ordering of settings in the SETTINGS frame. Each entry appears at most once. See [Http2SettingId](#http2settingid).                                                                       |
+| `headersPseudoOrder`           | `Http2PseudoHeaderId[]` | Ordering of HTTP/2 pseudo-headers (`:method`, `:scheme`, etc.) in HEADERS frames. See [Http2PseudoHeaderId](#http2pseudoheaderid).                                                                 |
+| `headersStreamDependency`      | `Http2StreamDependency` | Stream dependency for HEADERS frames (RFC 7540 priority).                                                                                                                                          |
+| `priorities`                   | `Http2Priority[]`       | Explicit PRIORITY frames to send after connection setup. Each `streamId` must be unique and greater than 0.                                                                                        |
 
 ---
 
@@ -228,9 +228,9 @@ All 23 fields for HTTP/2 framing and settings configuration.
 
 ```typescript
 interface Http2StreamDependency {
-  dependencyId: number;  // Stream ID this stream depends on (0 = root)
-  weight: number;        // Priority weight (1-256 on wire, 0-255 in this API)
-  exclusive?: boolean;   // Exclusive dependency flag (default: false)
+  dependencyId: number; // Stream ID this stream depends on (0 = root)
+  weight: number; // Priority weight (1-256 on wire, 0-255 in this API)
+  exclusive?: boolean; // Exclusive dependency flag (default: false)
 }
 ```
 
@@ -238,8 +238,8 @@ interface Http2StreamDependency {
 
 ```typescript
 interface Http2Priority {
-  streamId: number;               // Stream ID to set priority for (must be > 0, must be unique)
-  dependency: Http2StreamDependency;  // Dependency and weight for this stream
+  streamId: number; // Stream ID to set priority for (must be > 0, must be unique)
+  dependency: Http2StreamDependency; // Dependency and weight for this stream
 }
 ```
 
@@ -265,11 +265,11 @@ Union of HTTP/2 pseudo-header identifiers for `headersPseudoOrder`:
 
 ```typescript
 type Http2PseudoHeaderId =
-  | "Method"      // :method
-  | "Scheme"      // :scheme
-  | "Authority"   // :authority
-  | "Path"        // :path
-  | "Protocol";   // :protocol (RFC 8441)
+  | "Method" // :method
+  | "Scheme" // :scheme
+  | "Authority" // :authority
+  | "Path" // :path
+  | "Protocol"; // :protocol (RFC 8441)
 ```
 
 #### `TlsVersion`
@@ -334,13 +334,7 @@ const response = await fetch("https://example.com", {
       initialConnectionWindowSize: 15728640,
       enablePush: false,
       noRfc7540Priorities: true,
-      settingsOrder: [
-        "HeaderTableSize",
-        "EnablePush",
-        "InitialWindowSize",
-        "MaxHeaderListSize",
-        "NoRfc7540Priorities",
-      ],
+      settingsOrder: ["HeaderTableSize", "EnablePush", "InitialWindowSize", "MaxHeaderListSize", "NoRfc7540Priorities"],
       headersPseudoOrder: ["Method", "Authority", "Scheme", "Path"],
     },
     headers: [
@@ -383,11 +377,11 @@ const response = await fetch("https://example.com", {
 
 **Verified fingerprints:**
 
-| Fingerprint | Value |
-|---|---|
-| JA3 | Varies per request (due to `permuteExtensions: true`) |
-| JA4 | `t13d1517h2_8daaf6152771_02713d6af862` (stable, because JA4 sorts extensions) |
-| Akamai | `1:65536,2:0,4:6291456,6:262144,9:1\|15663105\|0\|m,a,s,p` |
+| Fingerprint | Value                                                                         |
+| ----------- | ----------------------------------------------------------------------------- |
+| JA3         | Varies per request (due to `permuteExtensions: true`)                         |
+| JA4         | `t13d1517h2_8daaf6152771_02713d6af862` (stable, because JA4 sorts extensions) |
+| Akamai      | `1:65536,2:0,4:6291456,6:262144,9:1\|15663105\|0\|m,a,s,p`                    |
 
 ### Firefox 146
 
@@ -411,8 +405,7 @@ const response = await fetch("https://example.com", {
       pskSkipSessionTicket: false,
       pskDheKe: true,
       renegotiation: true,
-      delegatedCredentials:
-        "ecdsa_secp256r1_sha256,ecdsa_secp384r1_sha384,ecdsa_secp521r1_sha512,ecdsa_sha1",
+      delegatedCredentials: "ecdsa_secp256r1_sha256,ecdsa_secp384r1_sha384,ecdsa_secp521r1_sha512,ecdsa_sha1",
       curvesList: "X25519MLKEM768:X25519:P-256:P-384:P-521",
       cipherList:
         "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-SHA:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA:AES256-SHA",
@@ -420,20 +413,14 @@ const response = await fetch("https://example.com", {
         "ecdsa_secp256r1_sha256:ecdsa_secp384r1_sha384:ecdsa_secp521r1_sha512:rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:rsa_pss_rsae_sha512:rsa_pkcs1_sha256:rsa_pkcs1_sha384:rsa_pkcs1_sha512:ecdsa_sha1:rsa_pkcs1_sha1",
       certificateCompressionAlgorithms: ["zlib", "brotli", "zstd"],
       recordSizeLimit: 16385,
-      extensionPermutation: [
-        28, 27, 43, 0, 65281, 10, 35, 16, 5, 51, 13, 11, 45, 23, 65037, 17513, 18, 41,
-      ],
+      extensionPermutation: [28, 27, 43, 0, 65281, 10, 35, 16, 5, 51, 13, 11, 45, 23, 65037, 17513, 18, 41],
     },
     http2Options: {
       headerTableSize: 65536,
       initialWindowSize: 131072,
       maxFrameSize: 16384,
       initialConnectionWindowSize: 12517377,
-      settingsOrder: [
-        "HeaderTableSize",
-        "InitialWindowSize",
-        "MaxFrameSize",
-      ],
+      settingsOrder: ["HeaderTableSize", "InitialWindowSize", "MaxFrameSize"],
       headersPseudoOrder: ["Method", "Path", "Authority", "Scheme"],
       headersStreamDependency: {
         dependencyId: 13,
@@ -450,14 +437,8 @@ const response = await fetch("https://example.com", {
       ],
     },
     headers: [
-      [
-        "user-agent",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:146.0) Gecko/20100101 Firefox/146.0",
-      ],
-      [
-        "accept",
-        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      ],
+      ["user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:146.0) Gecko/20100101 Firefox/146.0"],
+      ["accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"],
       ["accept-language", "en-US,en;q=0.5"],
       ["accept-encoding", "gzip, deflate, br, zstd"],
       ["upgrade-insecure-requests", "1"],
@@ -487,11 +468,11 @@ const response = await fetch("https://example.com", {
 
 **Verified fingerprints:**
 
-| Fingerprint | Value |
-|---|---|
-| JA3 | `456523fc94726331a8a66098277ba328` (stable, because `extensionPermutation` is fixed) |
-| JA4 | `t13d1715h2_5b57614c22b0_3d5424432f57` |
-| Akamai | `1:65536,4:131072,5:16384\|12451842\|3:0:0:200,5:0:0:100,7:0:0:0,9:7:0:0,11:3:0:0,13:0:0:240\|m,p,a,s` |
+| Fingerprint | Value                                                                                                  |
+| ----------- | ------------------------------------------------------------------------------------------------------ |
+| JA3         | `456523fc94726331a8a66098277ba328` (stable, because `extensionPermutation` is fixed)                   |
+| JA4         | `t13d1715h2_5b57614c22b0_3d5424432f57`                                                                 |
+| Akamai      | `1:65536,4:131072,5:16384\|12451842\|3:0:0:200,5:0:0:100,7:0:0:0,9:7:0:0,11:3:0:0,13:0:0:240\|m,p,a,s` |
 
 ---
 
@@ -514,9 +495,9 @@ HTTP/2 connections start with a default connection-level flow control window of 
 The `initialConnectionWindowSize` value you set is the **target window size**. The library sends a `WINDOW_UPDATE` increment of `target - 65535` on the wire. For example:
 
 | `initialConnectionWindowSize` | WINDOW_UPDATE increment |
-|---|---|
-| 15,728,640 (Chrome) | 15,663,105 |
-| 12,517,377 (Firefox) | 12,451,842 |
+| ----------------------------- | ----------------------- |
+| 15,728,640 (Chrome)           | 15,663,105              |
+| 12,517,377 (Firefox)          | 12,451,842              |
 
 This is why Akamai fingerprints show the increment (e.g., `15663105`), not the configured value.
 
@@ -568,13 +549,13 @@ The `curvesList` string accepts human-readable curve names. The name `X25519MLKE
 
 Other commonly used names and their wire IDs:
 
-| Name | Wire ID |
-|---|---|
-| `X25519` | 29 |
-| `P-256` | 23 |
-| `P-384` | 24 |
-| `P-521` | 25 |
-| `X25519MLKEM768` | 4588 |
+| Name             | Wire ID |
+| ---------------- | ------- |
+| `X25519`         | 29      |
+| `P-256`          | 23      |
+| `P-384`          | 24      |
+| `P-521`          | 25      |
+| `X25519MLKEM768` | 4588    |
 
 ### Why Chrome JA3 varies but JA4 stays stable
 
