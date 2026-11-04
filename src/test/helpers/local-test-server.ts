@@ -560,7 +560,8 @@ function setupEchoWebSocket(
   let buffer = Buffer.alloc(0);
   let closed = false;
 
-  socket.on("data", (chunk) => {
+  // No encoding is set on the socket, so chunks are always Buffers.
+  socket.on("data", (chunk: Buffer) => {
     buffer = Buffer.concat([buffer, chunk]);
     parseFrames();
   });
