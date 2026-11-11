@@ -688,6 +688,28 @@ describe("WebSocket", () => {
     }
   });
 
+  test("session.websocket stores Set-Cookie from the upgrade response in the session jar", async () => {
+    const session = await createSession({ browser: "chrome_142" });
+
+    try {
+      const url = new URL(WS_TEST_URL);
+      url.searchParams.append("setCookie", "upgradeCookie=101");
+      url.searchParams.append("setCookie", "secondUpgradeCookie=also");
+
+      const ws = await session.websocket(url);
+      ws.close();
+      await waitForClose(ws);
+
+      const response = await session.fetch(httpUrl("/cookies"), { timeout: 5_000 });
+      const body = (await response.json()) as { cookies: Record<string, string> };
+
+      assert.strictEqual(body.cookies.upgradeCookie, "101");
+      assert.strictEqual(body.cookies.secondUpgradeCookie, "also");
+    } finally {
+      await session.close();
+    }
+  });
+
   test("session.websocket rejects browser/os/emulation/proxy overrides", async () => {
     const session = await createSession({ browser: "chrome_142" });
 

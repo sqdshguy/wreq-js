@@ -44,7 +44,7 @@ It also highlights intentional extensions and current native limitations from th
 
 | Feature | Status | Notes |
 | ------- | ------ | ----- |
-| `createSession` cookie persistence | Supported | Session cookie jar is reused across session requests and session WebSocket connections. |
+| `createSession` cookie persistence | Supported | Session cookie jar is reused across session requests and session WebSocket connections, including `Set-Cookie` on the upgrade response. |
 | `session.websocket(...)` | Supported | Reuses session transport plus session cookies. |
 | Per request transport override in session fetch | Supported | Use `transport` to override transport details on a specific request. |
 | Per request `browser/os/proxy` inside session websocket | Not supported | Session websocket uses transport from the session context. |

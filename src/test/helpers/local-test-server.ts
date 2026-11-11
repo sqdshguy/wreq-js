@@ -513,6 +513,9 @@ export async function startLocalTestServer(): Promise<LocalTestServer> {
       if (selectedProtocol) {
         responseHeaders.push(`Sec-WebSocket-Protocol: ${selectedProtocol}`);
       }
+      for (const cookie of url.searchParams.getAll("setCookie")) {
+        responseHeaders.push(`Set-Cookie: ${cookie}; Path=/`);
+      }
 
       socket.write(`${responseHeaders.join("\r\n")}\r\n\r\n`);
 
