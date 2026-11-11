@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Mutex;
 use wreq::cookie::{CookieStore, Cookies};
-use wreq::header::OrigHeaderMap;
+use wreq::header::{HeaderValue, OrigHeaderMap};
 use wreq::ws::WebSocket;
 use wreq::ws::message::{CloseCode, CloseFrame, Message};
 
@@ -37,6 +37,8 @@ pub struct WebSocketOptions {
 pub struct WebSocketUpgradeMetadata {
     pub protocol: Option<String>,
     pub extensions: Option<String>,
+    /// `Set-Cookie` headers of the upgrade response.
+    pub set_cookies: Vec<HeaderValue>,
 }
 
 /// WebSocket connection wrapper
@@ -221,7 +223,7 @@ pub async fn connect_websocket_with_session(
         all_headers.push(("Cookie".to_string(), cookie_segments.join("; ")));
     }
 
-    connect_websocket_with_client(
+    let (connection, receiver, metadata) = connect_websocket_with_client(
         &resolved.http_client,
         url,
         &all_headers,
@@ -230,7 +232,12 @@ pub async fn connect_websocket_with_session(
         max_frame_size,
         max_message_size,
     )
-    .await
+    .await?;
+
+    // Servers may set cookies on the 101 response; keep them for later requests.
+    cookie_jar.set_cookies(&mut metadata.set_cookies.iter(), &cookie_origin_uri(&uri));
+
+    Ok((connection, receiver, metadata))
 }
 
 /// Build an OrigHeaderMap with Title-Case header names for HTTP/1.1 WebSocket
@@ -331,6 +338,12 @@ async fn connect_websocket_with_client(
         .get("sec-websocket-extensions")
         .and_then(|value| value.to_str().ok())
         .map(|value| value.to_string());
+    let set_cookies = ws_response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .cloned()
+        .collect();
 
     // Upgrade to WebSocket
     let websocket = ws_response.into_websocket().await?;
@@ -346,6 +359,7 @@ async fn connect_websocket_with_client(
         WebSocketUpgradeMetadata {
             protocol,
             extensions,
+            set_cookies,
         },
     ))
 }

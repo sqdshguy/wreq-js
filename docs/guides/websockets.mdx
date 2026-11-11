@@ -56,7 +56,7 @@ ws.onerror = () => {
 
 For authenticated flows, create a session, log in with HTTP, then open the WebSocket with the same session.
 
-`session.websocket(...)` reuses the session transport and context.
+`session.websocket(...)` reuses the session transport and context. Cookies the server sets on the `101 Switching Protocols` response are stored in the session jar, as a browser does.
 
 ```typescript
 import { createSession } from 'wreq-js';
