@@ -10,8 +10,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # HTTP client with browser impersonation
-wreq = { version = "0.16.3", default-features = false, features = ["cookies", "gzip", "brotli", "deflate", "zstd", "charset", "system-proxy", "socks", "ws", "stream", "webpki-roots", "tokio-rt"] }
-wreq-util = { version = "0.2.0", features = ["emulation-serde", "tokio-rt", "emulation-compression"] }
+wreq = { version = "0.16.4", default-features = false, features = ["cookies", "gzip", "brotli", "deflate", "zstd", "charset", "system-proxy", "socks", "ws", "stream", "webpki-roots", "tokio-rt"] }
+wreq-util = { version = "0.2.1", features = ["emulation-serde", "tokio-rt", "emulation-compression"] }
 webpki-root-certs = "1.0.11"
 
 # WebSocket support
@@ -47,7 +47,7 @@ uuid = { version = "1.29.0", features = ["v4"] }
 [build-dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-wreq-util = { version = "0.2.0", features = ["emulation-serde", "tokio-rt", "emulation-compression"] }
+wreq-util = { version = "0.2.1", features = ["emulation-serde", "tokio-rt", "emulation-compression"] }
 
 [dev-dependencies]
 btls = "0.5.6"
