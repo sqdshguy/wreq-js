@@ -1,6 +1,6 @@
 {
   "name": "@wreq-js/binding-android-arm64",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "cpu": [
     "arm64"
   ],

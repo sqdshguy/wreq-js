@@ -1,6 +1,6 @@
 {
   "name": "wreq-js",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "description": "Node.js/TypeScript HTTP client with browser TLS fingerprint impersonation (JA3/JA4). Bypass Cloudflare and anti-bot detection. Rust-powered, fetch()-compatible.",
   "type": "module",
   "main": "./dist/wreq-js.cjs",
