@@ -54,7 +54,7 @@ jobs:
           - os: windows-2022
             arch: x64
             platform-arch: win32-x64-msvc
-          - os: macos-14
+          - os: macos-15
             arch: arm64
             platform-arch: darwin-arm64
           - os: ubuntu-24.04-arm
@@ -210,7 +210,7 @@ jobs:
             arch: x64
             platform-arch: win32-x64-msvc
           # ARM64 tests on supported platforms
-          - os: macos-14
+          - os: macos-15
             node-version: 24
             arch: arm64
             platform-arch: darwin-arm64
