@@ -56,7 +56,7 @@ ws.onerror = () => {
 
 For authenticated flows, create a session, log in with HTTP, then open the WebSocket with the same session.
 
-`session.websocket(...)` reuses the session transport and context. Cookies the server sets on the `101 Switching Protocols` response are stored in the session jar, as a browser does.
+`session.websocket(...)` reuses the session transport and context. Cookies the server sets on the handshake response are stored in the session jar the way the emulated browser stores them. Every profile keeps cookies from a successful `101 Switching Protocols` response. When the server rejects the handshake, Chrome, Edge and Opera profiles keep cookies only from a `401` or `407` response, as Chromium does; Firefox, Safari and OkHttp profiles keep them whatever the status.
 
 ```typescript
 import { createSession } from 'wreq-js';

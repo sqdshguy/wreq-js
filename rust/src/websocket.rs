@@ -6,12 +6,14 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Mutex;
-use wreq::cookie::{CookieStore, Cookies};
-use wreq::header::{HeaderValue, OrigHeaderMap};
-use wreq::ws::WebSocket;
+use wreq::cookie::{CookieStore, Cookies, Jar};
+use wreq::header::{HeaderMap, OrigHeaderMap, SET_COOKIE};
 use wreq::ws::message::{CloseCode, CloseFrame, Message};
+use wreq::ws::{WebSocket, WebSocketRequestBuilder};
 
-use crate::client::{cookie_origin_uri, get_session_cookie_jar, get_transport_resolved};
+use crate::client::{
+    HandshakeCookiePolicy, cookie_origin_uri, get_session_cookie_jar, get_transport_resolved,
+};
 use crate::custom_emulation::resolve_emulation;
 use wreq_util::{Platform as BrowserEmulationOS, Profile as BrowserEmulation};
 
@@ -37,8 +39,6 @@ pub struct WebSocketOptions {
 pub struct WebSocketUpgradeMetadata {
     pub protocol: Option<String>,
     pub extensions: Option<String>,
-    /// `Set-Cookie` headers of the upgrade response.
-    pub set_cookies: Vec<HeaderValue>,
 }
 
 /// WebSocket connection wrapper
@@ -148,13 +148,13 @@ pub async fn connect_websocket(
         .context("Failed to build HTTP client")?;
 
     connect_websocket_with_client(
-        &client,
-        &options.url,
+        client.get(&options.url),
         &options.headers,
         &options.protocols,
         &emulation_orig_headers,
         options.max_frame_size,
         options.max_message_size,
+        None,
     )
     .await
 }
@@ -223,21 +223,44 @@ pub async fn connect_websocket_with_session(
         all_headers.push(("Cookie".to_string(), cookie_segments.join("; ")));
     }
 
-    let (connection, receiver, metadata) = connect_websocket_with_client(
-        &resolved.http_client,
-        url,
+    let handshake_cookies = HandshakeCookies {
+        origin: cookie_origin_uri(&uri).into_owned(),
+        jar: cookie_jar,
+        policy: resolved.handshake_cookie_policy,
+    };
+
+    connect_websocket_with_client(
+        resolved.http_client.get(url),
         &all_headers,
         protocols,
         &resolved.emulation_orig_headers,
         max_frame_size,
         max_message_size,
+        Some(handshake_cookies),
     )
-    .await?;
+    .await
+}
 
-    // Servers may set cookies on the 101 response; keep them for later requests.
-    cookie_jar.set_cookies(&mut metadata.set_cookies.iter(), &cookie_origin_uri(&uri));
+/// Where a session WebSocket stores cookies from its handshake response.
+struct HandshakeCookies {
+    jar: Arc<Jar>,
+    /// HTTP origin of the WebSocket URL; the jar only matches http/https.
+    origin: wreq::Uri,
+    policy: HandshakeCookiePolicy,
+}
 
-    Ok((connection, receiver, metadata))
+impl HandshakeCookies {
+    /// Store `Set-Cookie` from the handshake response if the emulated browser
+    /// would. Runs before the 101 check, so rejected handshakes count too.
+    fn store(&self, status: u16, headers: &HeaderMap) {
+        if !self.policy.keeps_cookies_from(status) {
+            return;
+        }
+        let mut cookies = headers.get_all(SET_COOKIE).iter().peekable();
+        if cookies.peek().is_some() {
+            self.jar.set_cookies(&mut cookies, &self.origin);
+        }
+    }
 }
 
 /// Build an OrigHeaderMap with Title-Case header names for HTTP/1.1 WebSocket
@@ -284,22 +307,22 @@ fn build_ws_orig_headers(
     orig
 }
 
-/// Internal: connect using an existing client.
+/// Internal: perform the WebSocket handshake for a prepared GET request.
 async fn connect_websocket_with_client(
-    client: &wreq::Client,
-    url: &str,
+    request: wreq::RequestBuilder,
     headers: &[(String, String)],
     protocols: &[String],
     emulation_orig_headers: &OrigHeaderMap,
     max_frame_size: Option<usize>,
     max_message_size: Option<usize>,
+    handshake_cookies: Option<HandshakeCookies>,
 ) -> Result<(
     WsConnection,
     futures_util::stream::SplitStream<WebSocket>,
     WebSocketUpgradeMetadata,
 )> {
     // Create WebSocket request
-    let mut request = client.websocket(url);
+    let mut request = WebSocketRequestBuilder::new(request);
 
     // Apply custom headers
     for (key, value) in headers.iter() {
@@ -328,6 +351,10 @@ async fn connect_websocket_with_client(
         .await
         .context("Failed to send WebSocket upgrade request")?;
 
+    if let Some(handshake_cookies) = &handshake_cookies {
+        handshake_cookies.store(ws_response.status().as_u16(), ws_response.headers());
+    }
+
     let protocol = ws_response
         .headers()
         .get("sec-websocket-protocol")
@@ -338,12 +365,6 @@ async fn connect_websocket_with_client(
         .get("sec-websocket-extensions")
         .and_then(|value| value.to_str().ok())
         .map(|value| value.to_string());
-    let set_cookies = ws_response
-        .headers()
-        .get_all("set-cookie")
-        .iter()
-        .cloned()
-        .collect();
 
     // Upgrade to WebSocket
     let websocket = ws_response.into_websocket().await?;
@@ -359,7 +380,6 @@ async fn connect_websocket_with_client(
         WebSocketUpgradeMetadata {
             protocol,
             extensions,
-            set_cookies,
         },
     ))
 }

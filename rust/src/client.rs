@@ -270,6 +270,46 @@ impl TransportConfig {
 pub(crate) struct ResolvedClient {
     pub(crate) http_client: HttpClient,
     pub(crate) emulation_orig_headers: OrigHeaderMap,
+    pub(crate) handshake_cookie_policy: HandshakeCookiePolicy,
+}
+
+/// Which WebSocket handshake responses may set cookies, following the emulated
+/// browser.
+///
+/// Chromium checks the handshake status before its cookie code runs and lets
+/// only 101, 401 and 407 through (`ValidateResponse` in
+/// net/websockets/websocket_basic_handshake_stream.cc), so it drops cookies
+/// from any other rejected handshake. Firefox, Safari and OkHttp store cookies
+/// from every response before checking for 101, as the Fetch spec does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HandshakeCookiePolicy {
+    AnyStatus,
+    Chromium,
+}
+
+impl HandshakeCookiePolicy {
+    fn for_browser(browser: Option<BrowserEmulation>) -> Self {
+        let label = browser
+            .and_then(|browser| serde_json::to_value(browser).ok())
+            .and_then(|value| value.as_str().map(str::to_owned));
+        match label.as_deref() {
+            Some(label)
+                if ["chrome_", "edge_", "opera_"]
+                    .iter()
+                    .any(|prefix| label.starts_with(prefix)) =>
+            {
+                Self::Chromium
+            }
+            _ => Self::AnyStatus,
+        }
+    }
+
+    pub(crate) fn keeps_cookies_from(self, status: u16) -> bool {
+        match self {
+            Self::AnyStatus => true,
+            Self::Chromium => matches!(status, 101 | 401 | 407),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -903,6 +943,7 @@ fn build_client(config: &TransportConfig) -> Result<ResolvedClient> {
     Ok(ResolvedClient {
         http_client,
         emulation_orig_headers,
+        handshake_cookie_policy: HandshakeCookiePolicy::for_browser(config.browser),
     })
 }
 
@@ -952,6 +993,7 @@ fn build_ephemeral_client(config: &SessionConfig) -> Result<ResolvedClient> {
     Ok(ResolvedClient {
         http_client,
         emulation_orig_headers,
+        handshake_cookie_policy: HandshakeCookiePolicy::for_browser(config.browser),
     })
 }
 
@@ -1047,6 +1089,34 @@ mod tests {
         include_str!("../../src/test/helpers/certs/default-paths-leaf.crt");
 
     static ENV_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
+
+    #[test]
+    fn handshake_cookie_policy_follows_browser_family() {
+        let parse = |label: &str| {
+            serde_json::from_value::<BrowserEmulation>(serde_json::Value::String(label.into()))
+                .unwrap_or_else(|_| panic!("unknown profile {label}"))
+        };
+        for label in ["chrome_142", "edge_148", "opera_131"] {
+            assert_eq!(
+                HandshakeCookiePolicy::for_browser(Some(parse(label))),
+                HandshakeCookiePolicy::Chromium,
+                "{label}"
+            );
+        }
+        for label in ["firefox_151", "firefox_android_135", "safari_26.4", "safari_ios_26.2", "okhttp_5"] {
+            assert_eq!(
+                HandshakeCookiePolicy::for_browser(Some(parse(label))),
+                HandshakeCookiePolicy::AnyStatus,
+                "{label}"
+            );
+        }
+        assert_eq!(HandshakeCookiePolicy::for_browser(None), HandshakeCookiePolicy::AnyStatus);
+
+        let chromium = HandshakeCookiePolicy::Chromium;
+        assert!([101, 401, 407].iter().all(|&status| chromium.keeps_cookies_from(status)));
+        assert!([200, 302, 403, 404, 500].iter().all(|&status| !chromium.keeps_cookies_from(status)));
+        assert!(HandshakeCookiePolicy::AnyStatus.keeps_cookies_from(403));
+    }
 
     #[test]
     fn cookie_origin_uri_maps_websocket_schemes_to_http() {
