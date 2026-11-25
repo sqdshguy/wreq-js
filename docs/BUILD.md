@@ -26,6 +26,7 @@ npm run build
 ```
 
 This runs:
+
 1. `npm run build:rust`: compiles Rust code to `rust/*.node`
 2. `npm run build:ts`: compiles TypeScript to `dist/`
 

@@ -211,7 +211,6 @@ await fetch("https://example.com", {
 
 The full surface, including cipher lists, curves, ALPN, ALPS, GREASE and certificate compression, is documented in the [custom emulation guide](https://wreq.sqdsh.win).
 
-
 ## FAQ
 
 **How do I see what fingerprint I am actually sending?**
