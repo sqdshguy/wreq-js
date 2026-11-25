@@ -16,7 +16,7 @@ concurrency:
 jobs:
   build_types:
     name: "Build TypeScript bundle"
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
 
     steps:
       - name: Checkout code
@@ -51,7 +51,7 @@ jobs:
           - os: ubuntu-24.04
             arch: x64
             platform-arch: linux-x64-gnu
-          - os: macos-14
+          - os: macos-15
             arch: arm64
             platform-arch: darwin-arm64
 
@@ -114,7 +114,7 @@ jobs:
             node-version: 26
             arch: x64
             platform-arch: linux-x64-gnu
-          - os: macos-14
+          - os: macos-15
             node-version: 24
             arch: arm64
             platform-arch: darwin-arm64
@@ -163,7 +163,7 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
 
     steps:
       - name: Checkout code

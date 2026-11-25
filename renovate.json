@@ -37,6 +37,11 @@
       "minimumReleaseAge": "3 days"
     },
     {
+      "description": "Keep the typescript package on 6.x: TypeScript 7.0 ships no programmatic API (expected in 7.1), and the tests, tsdown dts and typecheck:tsc use it. TS 7 type checking already runs through @typescript/native-preview (tsgo). See https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/ (section 'Running Side-by-Side with TypeScript 6.0')",
+      "matchPackageNames": ["typescript"],
+      "allowedVersions": "<7"
+    },
+    {
       "description": "Never automerge major updates (Runtime or Dev)",
       "matchUpdateTypes": ["major"],
       "automerge": false

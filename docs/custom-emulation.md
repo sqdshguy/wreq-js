@@ -564,6 +564,7 @@ Chrome 110+ enables `permuteExtensions` by default, which randomly shuffles TLS 
 **JA4**, however, sorts extensions numerically before hashing, so the randomized order does not affect the output. This makes JA4 a more reliable fingerprint for identifying Chrome, since it produces the same hash regardless of extension permutation.
 
 If you are using `permuteExtensions: true` in your custom emulation:
+
 - Expect JA3 to change on every connection (this is correct Chrome behavior).
 - Expect JA4 to remain constant across connections.
 - If you need a fixed JA3, use `extensionPermutation` with a specific order instead.

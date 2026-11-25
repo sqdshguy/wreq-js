@@ -39,6 +39,7 @@
 ### Branch Naming
 
 Use descriptive branch names:
+
 - `feat/add-websocket-support` - for new features
 - `fix/memory-leak-in-request` - for bug fixes
 - `docs/update-readme` - for documentation
@@ -48,6 +49,7 @@ Use descriptive branch names:
 ### Code Style
 
 Use Biome for formatting and linting:
+
 ```bash
 # Check formatting and linting
 npm run check
