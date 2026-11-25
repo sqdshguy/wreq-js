@@ -18,7 +18,7 @@ webpki-root-certs = "1.0.11"
 futures-util = "0.3.34"
 
 # Byte buffers for streaming bodies
-bytes = "1.12.1"
+bytes = "1.12.2"
 
 # Cookie construction for Session.setCookies (must track wreq's cookie dependency)
 cookie = "0.18.2"
