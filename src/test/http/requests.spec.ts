@@ -232,6 +232,19 @@ describe("HTTP requests", () => {
     assert.strictEqual(response.headers.get("location"), Buffer.from("/café", "utf8").toString("latin1"));
   });
 
+  test("follows a non-ASCII Location header, percent-encoding it", { skip: !isLocalHttpBase }, async () => {
+    const response = await wreqFetch(httpUrl("/redirect/utf8"), {
+      browser: "chrome_142",
+      redirect: "follow",
+      timeout: 10_000,
+    });
+
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(response.redirected, true);
+    assert.strictEqual(response.url, httpUrl("/caf%C3%A9"));
+    assert.deepStrictEqual(await response.json(), { path: "/caf%C3%A9" });
+  });
+
   test("rejects when redirect mode is error", { skip: !isLocalHttpBase }, async () => {
     await assert.rejects(
       wreqFetch(httpUrl("/redirect"), {

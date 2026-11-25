@@ -367,6 +367,10 @@ export async function startLocalTestServer(): Promise<LocalTestServer> {
       return;
     }
 
+    if (path === "/caf%C3%A9") {
+      return json(res, { path });
+    }
+
     const delayMatch = path.match(/^\/delay\/(\d+)/);
     if (delayMatch) {
       const seconds = Number(delayMatch[1]);
