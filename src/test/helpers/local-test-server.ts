@@ -476,6 +476,17 @@ export async function startLocalTestServer(): Promise<LocalTestServer> {
         return;
       }
 
+      const rejectStatus = url.searchParams.get("rejectStatus");
+      if (rejectStatus) {
+        const rejectHeaders = [`HTTP/1.1 ${rejectStatus} Rejected`, "Content-Length: 0", "Connection: close"];
+        for (const cookie of url.searchParams.getAll("setCookie")) {
+          rejectHeaders.push(`Set-Cookie: ${cookie}; Path=/`);
+        }
+        socket.write(`${rejectHeaders.join("\r\n")}\r\n\r\n`);
+        socket.destroy();
+        return;
+      }
+
       const acceptKey = createHash("sha1")
         .update(secKey + WS_MAGIC_STRING)
         .digest("base64");
@@ -512,6 +523,9 @@ export async function startLocalTestServer(): Promise<LocalTestServer> {
       ];
       if (selectedProtocol) {
         responseHeaders.push(`Sec-WebSocket-Protocol: ${selectedProtocol}`);
+      }
+      for (const cookie of url.searchParams.getAll("setCookie")) {
+        responseHeaders.push(`Set-Cookie: ${cookie}; Path=/`);
       }
 
       socket.write(`${responseHeaders.join("\r\n")}\r\n\r\n`);

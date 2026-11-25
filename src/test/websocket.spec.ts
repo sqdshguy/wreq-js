@@ -688,6 +688,61 @@ describe("WebSocket", () => {
     }
   });
 
+  test("session.websocket stores Set-Cookie from the upgrade response in the session jar", async () => {
+    const session = await createSession({ browser: "chrome_142" });
+
+    try {
+      const url = new URL(WS_TEST_URL);
+      url.searchParams.append("setCookie", "upgradeCookie=101");
+      url.searchParams.append("setCookie", "secondUpgradeCookie=also");
+
+      const ws = await session.websocket(url);
+      ws.close();
+      await waitForClose(ws);
+
+      const response = await session.fetch(httpUrl("/cookies"), { timeout: 5_000 });
+      const body = (await response.json()) as { cookies: Record<string, string> };
+
+      assert.strictEqual(body.cookies.upgradeCookie, "101");
+      assert.strictEqual(body.cookies.secondUpgradeCookie, "also");
+    } finally {
+      await session.close();
+    }
+  });
+
+  // Which rejected handshakes may set cookies follows the emulated browser: Chromium
+  // keeps cookies only from 101, 401 and 407; Firefox, Safari and OkHttp keep them
+  // from every response.
+  const rejectedHandshakeCases = [
+    { browser: "chrome_142", status: 401, kept: true },
+    { browser: "chrome_142", status: 403, kept: false },
+    { browser: "edge_148", status: 403, kept: false },
+    { browser: "firefox_151", status: 403, kept: true },
+    { browser: "safari_26.4", status: 403, kept: true },
+    { browser: "okhttp_5", status: 403, kept: true },
+  ] as const;
+
+  for (const { browser, status, kept } of rejectedHandshakeCases) {
+    test(`session.websocket ${kept ? "stores" : "drops"} Set-Cookie from a ${status} handshake with ${browser}`, async () => {
+      const session = await createSession({ browser });
+
+      try {
+        const url = new URL(WS_TEST_URL);
+        url.searchParams.set("rejectStatus", String(status));
+        url.searchParams.append("setCookie", `rejectedCookie=${status}`);
+
+        await assert.rejects(() => session.websocket(url));
+
+        const response = await session.fetch(httpUrl("/cookies"), { timeout: 5_000 });
+        const body = (await response.json()) as { cookies: Record<string, string> };
+
+        assert.strictEqual(body.cookies.rejectedCookie, kept ? String(status) : undefined);
+      } finally {
+        await session.close();
+      }
+    });
+  }
+
   test("session.websocket rejects browser/os/emulation/proxy overrides", async () => {
     const session = await createSession({ browser: "chrome_142" });
 
