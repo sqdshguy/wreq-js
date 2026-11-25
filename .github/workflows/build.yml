@@ -19,7 +19,7 @@ jobs:
             target: x86_64-apple-darwin
             arch: x64
             build: npm run build:rust -- --target x86_64-apple-darwin
-          - host: macos-14
+          - host: macos-15
             target: aarch64-apple-darwin
             arch: arm64
             build: npm run build:rust -- --target aarch64-apple-darwin
